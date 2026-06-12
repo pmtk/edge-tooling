@@ -98,21 +98,39 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
 
    ```text
    Agent: subagent_type=general_purpose, prompt="Analyze this Prow job and save the report:
+   Job: <JOB_NAME>
+   URL: <JOB_URL>
+   Performance graphs (if generated): <WORKDIR>/graphs/<JOB_ID>/
    1. Run /microshift-ci:prow-job <ARTIFACTS_DIR>
-   2. After the analysis completes, save the FULL report output (including the --- STRUCTURED SUMMARY --- block) to:
+   2. Your goal is the UNDERLYING root cause, not the first error in the log — follow the
+      skill's drill-down and causal-chain requirements, consulting the sosreport and the
+      performance graphs when relevant.
+   3. After the analysis completes, save the FULL report output (including the --- STRUCTURED SUMMARY --- block) to:
       <WORKDIR>/jobs/release-<RELEASE>-job-<N>-<JOB_ID>.txt
-      Use the Write tool to save the file. The file must contain the complete analysis report."
+      Use the Write tool to save the file. The file must contain the complete analysis report.
+   4. After saving, reply with EXACTLY one line: DONE <output-file-path>. Do NOT include the
+      report text in your reply."
    ```
 
    **For PR jobs:**
 
    ```text
    Agent: subagent_type=general_purpose, prompt="Analyze this Prow job and save the report:
+   Job: <JOB_NAME> (PR #<PR>)
+   URL: <JOB_URL>
+   Performance graphs (if generated): <WORKDIR>/graphs/<BUILD_ID>/
    1. Run /microshift-ci:prow-job <ARTIFACTS_DIR>
-   2. After the analysis completes, save the FULL report output (including the --- STRUCTURED SUMMARY --- block) to:
+   2. Your goal is the UNDERLYING root cause, not the first error in the log — follow the
+      skill's drill-down and causal-chain requirements, consulting the sosreport and the
+      performance graphs when relevant.
+   3. After the analysis completes, save the FULL report output (including the --- STRUCTURED SUMMARY --- block) to:
       <WORKDIR>/jobs/prs-job-<N>-pr<PR>-<JOB_NAME_SUFFIX>.txt
-      Use the Write tool to save the file. The file must contain the complete analysis report."
+      Use the Write tool to save the file. The file must contain the complete analysis report.
+   4. After saving, reply with EXACTLY one line: DONE <output-file-path>. Do NOT include the
+      report text in your reply."
    ```
+
+   Substitute `<JOB_NAME>`, `<JOB_URL>`, and `<JOB_ID>`/`<BUILD_ID>` from the prepare script's JSON output (`job`, `url`, `build_id` fields).
 
 3. Launch **ALL** agents (all releases + PRs) in a **single message** as **foreground** agents (do NOT use `run_in_background`). Foreground agents in the same message run concurrently — this is just as fast as background agents but keeps your turn active until all complete.
 4. Say "Analyzing N jobs in parallel..." in your message text alongside the Agent tool calls.
