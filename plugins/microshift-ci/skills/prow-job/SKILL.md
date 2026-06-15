@@ -183,15 +183,85 @@ The user argument is: `<ARGUMENTS>`
    - **The anchor identifies the failure for deduplication — it is NOT the conclusion of the investigation. The first error found is rarely the root cause.**
 
 3. **Characterize — establish exactly WHAT failed before asking why**:
-   - For test steps with scenarios: enumerate the failing tests from `scenario-info/<scenario>/junit.xml` under the step's artifacts, then read the failing scenario's `rf-debug.log` and `phase_*/` logs (Robot Framework marks failures with `| FAIL |`). Record the failing scenario name(s) — the top-level `testsuite name` in each junit.xml — they populate the `scenarios` field in the report.
-   - For each failing scenario you investigate, run `bash plugins/microshift-ci/scripts/extract-sosreport.sh <scenario-dir>` NOW, before forming hypotheses — it is one cheap, idempotent command and its `highlights` index frequently contains the fatal product-side line (container exits, leader election lost, OOM kills) that the test logs only show as a symptom.
+   - For test steps with scenarios: enumerate the failing tests from `scenario-info/<scenario>/junit.xml` under the step's artifacts. A scenario has failed when its junit.xml contains `failures="[1-9]"` or `errors="[1-9]"` in the `<testsuite>` tag, or when `rf-debug.log` contains `| FAIL |`, or when junit.xml is missing/truncated (indicating a timeout kill). Record the failing scenario name(s) — the top-level `testsuite name` in each junit.xml — they populate the `scenarios` field in the report.
+   - **Fan-out decision** — count the failing scenarios identified above:
+     - **0 or 1 failing scenarios**: continue with the single-agent analysis below (Phases 3→4→5→6 as written).
+     - **2+ failing scenarios**: skip to **Phase 3b (Scenario Sub-Agent Orchestration)** — spawn one sub-agent per failing scenario for parallel deep analysis, then synthesize results. Do NOT proceed with Phases 3 (remaining bullets) or 4 for the individual scenarios yourself.
+   - For each failing scenario you investigate (single-scenario path only), run `bash plugins/microshift-ci/scripts/extract-sosreport.sh <scenario-dir>` NOW, before forming hypotheses — it is one cheap, idempotent command and its `highlights` index frequently contains the fatal product-side line (container exits, leader election lost, OOM kills) that the test logs only show as a symptom.
    - For conformance steps: extract the failing test names and their failure output from the step's `build-log.txt`.
    - For build/infra steps: extract the failing command and its complete error output from the step log.
    - Record the failure timestamp(s) — they drive the journal and graph correlation in the next phase.
    - When the MicroShift source checkout is available — check with Glob for `<WORKDIR>/src/microshift-release-<RELEASE>/` (release jobs) or `<WORKDIR>/src/microshift/` (main) — read the failing test's source: Robot Framework suites under `test/suites/`, scenario definitions under `test/scenarios*/`. Its assertions, timeouts, and setup are how you distinguish a test bug from a product bug. If the checkout is absent, note `"source checkout not available"` in `analysis_gaps` and continue.
    - Decide the stack layer: cloud infra, ci-config, hypervisor, or a legitimate test failure — and for test failures, the stage: setup, testing, teardown.
 
-4. **Drill down — iterate hypothesis → evidence until the cause is actionable**:
+   **Phase 3b — Scenario Sub-Agent Orchestration** (only when 2+ scenarios failed):
+
+   When multiple scenarios failed in a scenario-based test step, spawn one sub-agent per failing scenario for parallel deep analysis. Each sub-agent performs the drill-down investigation independently, scoped to a single scenario's artifacts.
+
+   **Launch all scenario sub-agents in a single message** using the Agent tool (foreground, concurrent execution). Each agent receives this prompt (substitute the `<PLACEHOLDERS>`):
+
+   ```text
+   Agent: subagent_type=general_purpose, prompt="Perform root cause analysis on this single CI test scenario failure.
+
+   Scenario: <SCENARIO_NAME>
+   Scenario artifacts directory: <SCENARIO_DIR>
+   Job URL: <JOB_URL>
+   Performance graphs (if present): <GRAPHS_DIR>
+   MicroShift source (if present): <SRC_DIR>
+
+   ## Investigation steps
+
+   1. Read <SCENARIO_DIR>/junit.xml — identify which tests failed, record their names
+   2. Read <SCENARIO_DIR>/rf-debug.log — search for | FAIL | markers to understand the failure sequence and timestamps
+   3. Check for plain-text journal exports at <SCENARIO_DIR>/vms/host1/sos/journal_*.log FIRST — these are readable without extraction and often contain the evidence you need (service failures, x509 errors, OOM kills)
+   4. Run: bash plugins/microshift-ci/scripts/extract-sosreport.sh <SCENARIO_DIR>
+      Read the printed JSON index — check highlights for panics, OOM kills, leader election lost. Scope the extraction to this scenario directory only.
+   5. If a container restarted (CrashLoopBackOff, repeated 'Created container' in journal, PLEG events), read the dead container's previous.log inside the extracted sosreport at sos_commands/microshift/namespaces/<ns>/pods/<pod>/<container>/<container>/logs/previous.log — its tail states the exit reason
+   6. When the failure involves timeouts, slowness, readiness/health-check expiry, eviction, or resource errors, Read performance graphs at <GRAPHS_DIR> (1_cpu_usage.png, 2_mem_usage.png, 3_disk_io.png, 4_disk_usage.png) and look for saturation overlapping the failure window
+   7. If MicroShift source is available at <SRC_DIR>, read the failing test source under test/suites/ and scenario definitions under test/scenarios*/ — this is how you distinguish a test bug from a product bug
+
+   ## Root cause attribution rules
+
+   - A test-layer fix is NEVER the bottom when a product component misbehaved. When a component was unavailable, not ready, crashed, or slow, reconstruct its timeline from the journal and pod logs before concluding.
+   - Product defect: the component became ready and later flapped, crashed, or stopped serving (readiness flips, liveness probe refused after startup, container exits and restarts). Report the product mechanism as root cause.
+   - Test defect: the component was still starting up normally and the test ran too early.
+   - Always check for container restarts — two 'Created container' events for the same pod means the first instance died. Read previous.log.
+   - Treat 'timed out waiting for X' as a symptom — explain WHY X was slow or absent.
+
+   ## Evidence requirements
+
+   Every causal-chain link must cite its evidence as file:line with a verbatim quote. Before finalizing, re-read every cited file:line to confirm the quote is actually there.
+
+   ## Output format
+
+   Return EXACTLY this structure — nothing else before or after:
+
+   --- SCENARIO ANALYSIS ---
+   {
+     \"scenario\": \"<SCENARIO_NAME>\",
+     \"severity\": <1-5 per severity rubric>,
+     \"stack_layer\": \"<AWS Infra|External Infrastructure|build phase|deploy phase|test setup phase|Test Configuration|test|teardown>\",
+     \"error_signature\": \"<concise unique one-line description for dedup>\",
+     \"root_cause\": \"<mechanism-focused WHY, ~80 chars, cross-release stable>\",
+     \"raw_error\": \"<primary error verbatim from log, ~150 chars, timestamps stripped>\",
+     \"infrastructure_failure\": <true|false>,
+     \"remediation\": \"<suggested fix direction, ~120 chars>\",
+     \"confidence\": \"<high|medium|low>\",
+     \"causal_chain\": [{\"cause\": \"...\", \"evidence\": \"<file:line>\", \"quote\": \"<verbatim>\"}],
+     \"analysis_gaps\": [\"<missing evidence, if any>\"],
+     \"failed_tests\": [\"<test names>\"],
+     \"failure_timestamp\": \"<ISO 8601 from rf-debug.log or junit>\"
+   }
+   --- END SCENARIO ANALYSIS ---"
+   ```
+
+   **Where the placeholders come from:** `<SCENARIO_NAME>` is the scenario directory name (e.g., `el96-lrel@standard1`). `<SCENARIO_DIR>` is the full path to `<TMP>/artifacts/<TEST_NAME>/openshift-microshift-e2e-metal-tests/artifacts/scenario-info/<SCENARIO_NAME>/`. `<JOB_URL>` is the Prow job URL (from input or reconstructed). `<GRAPHS_DIR>` is `<WORKDIR>/graphs/<BUILD_ID>/` (may not exist for URL-based invocations). `<SRC_DIR>` is `<WORKDIR>/src/microshift-release-<RELEASE>/` or `<WORKDIR>/src/microshift/` (may not exist).
+
+   **Error handling**: if a sub-agent returns no `--- SCENARIO ANALYSIS ---` block or returns malformed JSON, record that scenario with `confidence: "low"`, `analysis_gaps: ["sub-agent analysis failed for this scenario"]`, and use whatever information you gathered during the Localize phase (step name, junit failure count).
+
+   After all sub-agents return, proceed to **Phase 4b (Cross-Scenario Synthesis)**.
+
+4. **Drill down — iterate hypothesis → evidence until the cause is actionable** (single-scenario path, or non-scenario jobs):
    Repeat this loop until you reach a cause that is **actionable** (a specific code, configuration, test, or infrastructure problem someone can act on) or until the available evidence is exhausted:
    - State a hypothesis for WHY the error in hand occurred.
    - Seek confirming or refuting evidence ONE LAYER DEEPER than the current log:
@@ -203,6 +273,23 @@ The user argument is: `<ARGUMENTS>`
      - **Test defect** — the component was still starting up normally and the test simply ran too early against a documented startup sequence.
    - **Always check for container restarts.** Grep the journal for repeated `Created container`/`Started container` (crio) and `RemoveContainer`/PLEG events (kubelet) for the same pod. Two container instances for one pod means the first one DIED — a single startup story is the wrong narrative. Read the dead container's log to learn why it exited: in the sosreport at `sos_commands/microshift/namespaces/<namespace>/pods/<pod>/<container>/<container>/logs/previous.log` (`current.log` is the running instance). The last ~20 lines of `previous.log` usually state the exit reason (fatal error, leader election lost, panic, OOM).
    - Record every accepted hop as a causal-chain link with its evidence file and line — these become `causal_chain` in the report. Discarded hypotheses do not go into the chain.
+
+   **Phase 4b — Cross-Scenario Synthesis** (only when Phase 3b was used):
+
+   After all scenario sub-agents return, synthesize their results into the entries that will form the final `--- STRUCTURED SUMMARY ---` array:
+
+   1. **Parse each sub-agent's response**: extract the JSON object from between `--- SCENARIO ANALYSIS ---` and `--- END SCENARIO ANALYSIS ---` markers.
+   2. **Group by root cause similarity**: compare each pair of scenario results using token-based overlap on `raw_error` + `root_cause` text. When the overlap ratio (shared tokens / min token count) is >= 0.50, the scenarios share a root cause. Group them.
+   3. **Merge same-root-cause groups**: for each group of N scenarios with the same root cause, produce ONE structured summary entry:
+      - `scenarios`: array of all N scenario names
+      - `severity`, `error_signature`, `root_cause`, `raw_error`, `causal_chain`: take from the highest-severity entry in the group (tie-break: longest causal chain)
+      - `confidence`: take the MINIMUM confidence across the group (conservative)
+      - `analysis_gaps`: merge from all entries in the group (deduplicate)
+      - `remediation`: take from the representative entry
+   4. **Independent failures**: scenarios whose root cause doesn't match any other scenario get their own entry. Maximum 5 entries per job — if more than 5 independent failures, keep the 5 most severe.
+   5. **Cascade detection**: check failure timestamps across all scenario results. If the earliest-failing scenario's failure could poison shared state (hypervisor resource exhaustion, network misconfiguration, disk full), later scenarios failing with different errors may be cascading. When detected, produce ONE entry for the root scenario and note the cascade in `error_signature` (e.g., "disk exhaustion cascading to N scenarios").
+
+   After synthesis, proceed to Phase 5 (Corroborate) to add job-level history to each entry.
 
 5. **Corroborate — check the explanation against history and sibling failures**:
    - Query the job's recent history with the `mcp__openshift-ci__get_job_runs` tool (openshift-ci MCP, backed by Sippy): when did this job last pass, how many consecutive failures, do passes and failures interleave? Populate the `history` field. If the MCP is not available, record `"job history unavailable"` in `analysis_gaps` and move on — do not try to reconstruct history another way.

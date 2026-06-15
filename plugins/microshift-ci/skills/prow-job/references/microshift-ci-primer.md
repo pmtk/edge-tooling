@@ -4,6 +4,18 @@ Reference for analyzing MicroShift Prow job artifacts. Read this when
 unfamiliar with the artifact layout — it answers "which file answers
 which question".
 
+## Per-scenario sub-agent architecture
+
+When a scenario-based job has 2+ failing scenarios, the prow-job agent
+spawns one sub-agent per failing scenario for parallel deep analysis.
+Each sub-agent is scoped to a single scenario's artifacts
+(`scenario-info/<scenario>/`) and returns a structured JSON analysis.
+The prow-job agent then synthesizes results: grouping scenarios that
+share a root cause into single entries, detecting cascades via
+timestamps, and adding job-level context (history from Sippy, commit
+window). Jobs with 0–1 failing scenarios or non-scenario jobs are
+analyzed directly without sub-agents.
+
 ## Job types
 
 - **Scenario-based e2e jobs** (`e2e-aws-tests-*`): the
