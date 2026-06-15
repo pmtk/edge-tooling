@@ -206,6 +206,7 @@ The user argument is: `<ARGUMENTS>`
 
 5. **Corroborate — check the explanation against history and sibling failures**:
    - Query the job's recent history with the `mcp__openshift-ci__get_job_runs` tool (openshift-ci MCP, backed by Sippy): when did this job last pass, how many consecutive failures, do passes and failures interleave? Populate the `history` field. If the MCP is not available, record `"job history unavailable"` in `analysis_gaps` and move on — do not try to reconstruct history another way.
+   - **Never use WebFetch to query the release controller API** (e.g., `amd64.ocp.releases.ci.openshift.org`). Use the openshift-ci MCP tools instead: `mcp__openshift-ci__get_releases` to list release streams, `mcp__openshift-ci__get_payload_status` for payload acceptance status. WebFetch is not permitted in CI and will cause the job to fail.
    - Interpret job-level history by job type:
      - **Non-scenario-based jobs** (e.g., the conformance and ai-model-serving periodics, which run their tests directly): job history IS the test history — use it directly to date the regression and set `flake_likelihood`.
      - **Scenario-based jobs** (~20 scenarios per job): a job-level failure streak does NOT mean *this* scenario failed each time — any failing scenario fails the job. Treat job history as a weak signal and set `flake_likelihood` conservatively.
