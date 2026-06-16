@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 set -euo pipefail
 
-# Extract sosreport archives from downloaded Prow job artifacts and print
+# Extract sosreport archives from downloaded Prow job artifacts and write
 # a JSON index of the high-signal files inside them.
 #
 # Shared across components (MicroShift, LVMS, etc.) via symlinks in each
@@ -16,7 +16,7 @@ set -euo pipefail
 #                    for sosreport-*.tar.xz)
 #   --dest DIR:      extraction destination (default: <artifacts-dir>/sos-extracted)
 #
-# Output (stdout): JSON index:
+# Output: writes <dest>/index.json:
 #   {"sosreports": [{
 #      "archive": "<tarball path>",
 #      "extracted_to": "<dir>",
@@ -65,7 +65,8 @@ main() {
 
     if [[ ${#tarballs[@]} -eq 0 ]]; then
         echo "No sosreports found in ${artifacts_dir}" >&2
-        echo '{"sosreports": [], "note": "no sosreport found"}'
+        mkdir -p "${dest}"
+        echo '{"sosreports": [], "note": "no sosreport found"}' > "${dest}/index.json"
         return 0
     fi
 
@@ -135,7 +136,8 @@ main() {
             }]')
     done
 
-    echo "${result}"
+    echo "${result}" > "${dest}/index.json"
+    echo "Index written to ${dest}/index.json" >&2
 }
 
 main "${@}"
