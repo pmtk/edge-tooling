@@ -184,6 +184,20 @@ cmd_prepare() {
         fi
     fi
 
+    # Pre-extract sosreport tarballs so analysis agents start with indexed data
+    if [[ -d "${WORKDIR}/artifacts" ]]; then
+        local sos_dirs
+        sos_dirs=$(find "${WORKDIR}/artifacts" -name 'sosreport-*.tar.xz' -printf '%h\n' 2>/dev/null | sort -u)
+        if [[ -n "${sos_dirs}" ]]; then
+            echo "=== Extracting sosreports ===" >&2
+            local sos_count=0
+            while IFS= read -r d; do
+                bash "${SCRIPT_DIR}/extract-sosreport.sh" "${d}" 2>/dev/null && ((sos_count++)) || true
+            done <<< "${sos_dirs}"
+            echo "  Extracted sosreports in ${sos_count} directory(ies)" >&2
+        fi
+    fi
+
     # Optional read-only source checkout for analysis agents.
     # Deliberately separate from ${WORKDIR}/<name> used by fix-test-bugs.sh
     # (which sets up fork remotes for pushing). Failures here are non-fatal.
