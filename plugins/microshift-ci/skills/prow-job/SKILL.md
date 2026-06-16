@@ -104,19 +104,15 @@ After downloading artifacts locally, find the SOS report at:
 <TMP>/artifacts/<TEST_NAME>/openshift-microshift-infra-sos-aws/artifacts/sosreport-*.tar.xz
 ```
 
-Where `<TEST_NAME>` is the test name directory (e.g., `e2e-aws-tests`, `e2e-aws-ovn-ocp-conformance-serial`). To extract sosreports, run the extraction script — it finds all `sosreport-*.tar.xz` under the given directory, extracts them idempotently, and prints a JSON index of journals, namespace pod logs, and pre-scanned high-signal lines:
+Where `<TEST_NAME>` is the test name directory (e.g., `e2e-aws-tests`, `e2e-aws-ovn-ocp-conformance-serial`). Sosreports are pre-extracted during `doctor.sh prepare` — read the index at `<scenario-dir>/sos-extracted/index.json`. If the index does not exist (standalone URL invocation), run `bash plugins/microshift-ci/scripts/extract-sosreport.sh <scenario-dir>` to create it.
 
-```text
-bash plugins/microshift-ci/scripts/extract-sosreport.sh <artifacts-or-scenario-dir>
-```
-
-Read the printed index instead of browsing the extracted tree: `journals` lists the journalctl output files, `namespace_pod_logs` points at the per-namespace pod log tree (`.../pods/<pod>/<container>/<container>/logs/{current,previous}.log`), and `highlights` pre-greps fatal patterns (panics, OOM kills, `leader election lost`, ...) with file and line. Scope the argument to the failing scenario's directory when possible — extracting every sosreport in a 20-scenario job is slow and unnecessary.
+Read the index instead of browsing the extracted tree: `journals` lists the journalctl output files, `namespace_pod_logs` points at the per-namespace pod log tree (`.../pods/<pod>/<container>/<container>/logs/{current,previous}.log`), and `highlights` pre-greps fatal patterns (panics, OOM kills, `leader election lost`, ...) with file and line.
 
 **There may be several sosreports for a single scenario**: the test framework's sos-on-failure listener (`test/resources/sos-on-failure-listener.py` in openshift/microshift) captures a sosreport at the moment of each test failure, in addition to the one collected at the end of the scenario. **Prefer the on-failure sosreport when investigating a specific test failure**: it contains the pods and container logs of the namespaces created specifically for that test (suite), which are absent from the end-of-scenario sosreport because they have already been cleaned up by then. Match a sosreport to its test failure by capture time.
 
 **Check for plain-text journal exports before extracting tarballs**: scenario artifacts often include uncompressed `journal_*.log` files next to the sosreport tarballs (e.g., `scenario-info/<scenario>/vms/host1/sos/journal_*.log`). These are readable directly with Read/Grep — no `tar` needed — and frequently contain the journal evidence you need (service failures, x509 errors, OOM kills). Search them first.
 
-**The plain-text exports are NOT a substitute for extraction when a container crashed or restarted**: pod and container logs — in particular `previous.log`, the only record of WHY a dead container exited — exist exclusively inside the sosreport tarball. When the journal shows `CrashLoopBackOff`, `Back-off restarting`, repeated `Created container` events, or probe failures after readiness, extraction is mandatory: run `extract-sosreport.sh` and read the dead container's `previous.log`. Stopping at "the container restarted" reports the symptom, not the cause.
+**The plain-text exports are NOT a substitute for extraction when a container crashed or restarted**: pod and container logs — in particular `previous.log`, the only record of WHY a dead container exited — exist exclusively inside the sosreport tarball. When the journal shows `CrashLoopBackOff`, `Back-off restarting`, repeated `Created container` events, or probe failures after readiness, the extracted sosreport is mandatory: read the dead container's `previous.log` from `sos-extracted/`. Stopping at "the container restarted" reports the symptom, not the cause.
 
 Correlate journal entries with the failure timestamp recorded during the Characterize phase.
 
@@ -187,7 +183,7 @@ The user argument is: `<ARGUMENTS>`
    - **Fan-out decision** — count the failing scenarios identified above:
      - **0 or 1 failing scenarios**: continue with the single-agent analysis below (Phases 3→4→5→6 as written).
      - **2+ failing scenarios**: skip to **Phase 3b (Scenario Sub-Agent Orchestration)** — spawn one sub-agent per failing scenario for parallel deep analysis, then synthesize results. Do NOT proceed with Phases 3 (remaining bullets) or 4 for the individual scenarios yourself.
-   - For each failing scenario you investigate (single-scenario path only), run `bash plugins/microshift-ci/scripts/extract-sosreport.sh <scenario-dir>` NOW, before forming hypotheses — it is one cheap, idempotent command and its `highlights` index frequently contains the fatal product-side line (container exits, leader election lost, OOM kills) that the test logs only show as a symptom.
+   - For each failing scenario you investigate (single-scenario path only), read `<scenario-dir>/sos-extracted/index.json` NOW, before forming hypotheses — its `highlights` index frequently contains the fatal product-side line (container exits, leader election lost, OOM kills) that the test logs only show as a symptom. If the index does not exist, run `bash plugins/microshift-ci/scripts/extract-sosreport.sh <scenario-dir>` to create it.
    - For conformance steps: extract the failing test names and their failure output from the step's `build-log.txt`.
    - For build/infra steps: extract the failing command and its complete error output from the step log.
    - Record the failure timestamp(s) — they drive the journal and graph correlation in the next phase.
@@ -214,8 +210,7 @@ The user argument is: `<ARGUMENTS>`
    1. Read <SCENARIO_DIR>/junit.xml — identify which tests failed, record their names
    2. Read <SCENARIO_DIR>/rf-debug.log — search for | FAIL | markers to understand the failure sequence and timestamps
    3. Check for plain-text journal exports at <SCENARIO_DIR>/vms/host1/sos/journal_*.log FIRST — these are readable without extraction and often contain the evidence you need (service failures, x509 errors, OOM kills)
-   4. Run: bash plugins/microshift-ci/scripts/extract-sosreport.sh <SCENARIO_DIR>
-      Read the printed JSON index — check highlights for panics, OOM kills, leader election lost. Scope the extraction to this scenario directory only.
+   4. Read <SCENARIO_DIR>/sos-extracted/index.json — check highlights for panics, OOM kills, leader election lost. If the index does not exist, run: bash plugins/microshift-ci/scripts/extract-sosreport.sh <SCENARIO_DIR>
    5. If a container restarted (CrashLoopBackOff, repeated 'Created container' in journal, PLEG events), read the dead container's previous.log inside the extracted sosreport at sos_commands/microshift/namespaces/<ns>/pods/<pod>/<container>/<container>/logs/previous.log — its tail states the exit reason
    6. When the failure involves timeouts, slowness, readiness/health-check expiry, eviction, or resource errors, Read performance graphs at <GRAPHS_DIR> (1_cpu_usage.png, 2_mem_usage.png, 3_disk_io.png, 4_disk_usage.png) and look for saturation overlapping the failure window
    7. If MicroShift source is available at <SRC_DIR>, read the failing test source under test/suites/ and scenario definitions under test/scenarios*/ — this is how you distinguish a test bug from a product bug
@@ -265,7 +260,7 @@ The user argument is: `<ARGUMENTS>`
    Repeat this loop until you reach a cause that is **actionable** (a specific code, configuration, test, or infrastructure problem someone can act on) or until the available evidence is exhausted:
    - State a hypothesis for WHY the error in hand occurred.
    - Seek confirming or refuting evidence ONE LAYER DEEPER than the current log:
-     - **Sosreport** — ALWAYS extract it for failures in the test stage when present: run `bash plugins/microshift-ci/scripts/extract-sosreport.sh <scenario-or-artifacts-dir>` and start from its printed index (see the SOS Report section, including how to pick the right one when several exist). Correlate the microshift journal with the failure timestamp (entries within ±5 minutes), read the pod/container logs of the failing workload, and scan the system journal for OOM kills, segfaults, service restarts, and disk pressure.
+     - **Sosreport** — ALWAYS consult it for failures in the test stage when present: read `<scenario-dir>/sos-extracted/index.json` (see the SOS Report section, including how to pick the right one when several exist). If the index does not exist, run `bash plugins/microshift-ci/scripts/extract-sosreport.sh <scenario-dir>` to create it. Correlate the microshift journal with the failure timestamp (entries within ±5 minutes), read the pod/container logs of the failing workload, and scan the system journal for OOM kills, segfaults, service restarts, and disk pressure.
      - **Performance graphs** — when the failure involves a timeout, slowness, readiness/health-check expiry, eviction, or any resource error, Read the PNGs (see Performance Graphs section) and look for saturation overlapping the failure window.
    - Treat restating errors as symptoms: an error like "timed out waiting for X" is NOT a root cause — explain why X was slow or absent, or explicitly record that the evidence ran out.
    - **A test-layer fix is never the bottom when a product component misbehaved.** When the failure involves a product component that was unavailable, not ready, crashed, or slow ("no endpoints available", "connection refused", "not ready", "CrashLoopBackOff", probe failures), you MUST reconstruct that component's story from the journal and its pod logs before concluding. Build an exact timestamped timeline: when was the pod created, when did each container start, when did it become ready, did probes fail afterwards, did it restart, and why. Only then attribute the failure:
