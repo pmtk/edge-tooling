@@ -90,7 +90,6 @@ def _build_issues_from_jobs(jobs):
             "confidence": rep.get("confidence", ""),
             "causal_chain": rep.get("causal_chain", []),
             "analysis_gaps": rep.get("analysis_gaps", []),
-            "history": rep.get("history", {}),
             "scenarios": sorted({s for j in group for s in j.get("scenarios", [])}),
             "affected_jobs": [
                 {"name": j["job_name"], "date": j["finished"], "url": j["job_url"]}

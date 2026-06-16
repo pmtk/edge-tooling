@@ -93,7 +93,6 @@ def parse_structured_summary(filepath):
                 gap for gap in (data.get("analysis_gaps") or [])
                 if isinstance(gap, str)
             ],
-            "history": data.get("history") if isinstance(data.get("history"), dict) else {},
             "scenarios": [
                 s for s in (data.get("scenarios") or [])
                 if isinstance(s, str)
