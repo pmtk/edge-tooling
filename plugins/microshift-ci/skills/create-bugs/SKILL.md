@@ -3,7 +3,7 @@ name: microshift-ci:create-bugs
 argument-hint: <source1>[,<source2>,...] [--create]
 description: Create JIRA bugs from CI failure reports with cross-release deduplication (dry-run by default)
 user-invocable: true
-allowed-tools: Bash, Read, Write, Glob, Grep, Agent, mcp__jira__jira_search, mcp__jira__jira_create_issue, mcp__jira__jira_get_issue, mcp__jira__jira_add_comment, mcp__openshift-ci__get_regressions, mcp__openshift-ci__get_regression_detail
+allowed-tools: Bash, Read, Write, Glob, Grep, Agent, mcp__jira__jira_search, mcp__jira__jira_create_issue, mcp__jira__jira_get_issue, mcp__jira__jira_add_comment
 ---
 
 # microshift-ci:create-bugs
@@ -171,10 +171,6 @@ mcp__jira__jira_search(
 ```
 
 Record **every** result as a regression entry — these are shown in the HTML report with distinct "Regressions" styling.
-
-**Search D — Known-regression lookup (optional, run once per session)**:
-
-If the openshift-ci MCP is available, fetch the known test regressions once via `mcp__openshift-ci__get_regressions` (current release). For any candidate whose failing test or error matches a returned regression, fetch its detail with `mcp__openshift-ci__get_regression_detail` — when the regression has linked Jira issues, add those issues to the candidate's `duplicates` array (deduplicated by key) so the auto-decision policy updates them instead of filing a new bug. If the MCP is unavailable, skip Search D silently — searches A–C are unaffected.
 
 **Note**: Run searches in parallel where possible. All three searches (A, B, C) can run concurrently per candidate.
 
