@@ -85,9 +85,33 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
    - `4_disk_usage.png` — Disk usage by partition (% fill)
 3. If prerequisites are missing (`pcp2json`, `matplotlib`), the script errors and stops.
 
-### Step 2: Analyze Each Job Using /microshift-ci:prow-job
+### Step 1c: Extract Structured Evidence
 
-**Goal**: Get detailed root cause analysis for each failed job using pre-downloaded artifacts.
+**Goal**: Deterministically extract structured evidence from all job artifacts before LLM analysis. This gives each analysis agent a pre-extracted overview so it can skip exploratory file scanning and focus on root cause reasoning.
+
+**Actions**:
+
+1. Run the evidence extraction script:
+
+   ```text
+   bash plugins/microshift-ci/scripts/doctor.sh evidence --component microshift --workdir <WORKDIR>
+   ```
+
+2. The script processes each job's artifacts and produces `<WORKDIR>/evidence/evidence-<BUILD_ID>.json` containing:
+   - Failed step identification (from per-step `finished.json`)
+   - Infrastructure failure indicators (scheduling, AWS errors, CI cluster capacity)
+   - Per-scenario evidence: junit failures, RF failures, boot_and_run alerts, journal alerts (OOM, panics, container restarts, etcd pressure, OVN binding, probe failures), sosreport paths
+   - Conformance test failures
+   - Build/config error lines with context
+   - PCP graph availability
+   - Recent source commits (no path filter — product and test changes)
+   - Pre-extracted sosreports (when journal shows container restarts or crashes)
+
+3. If the script fails for some jobs, note the errors but continue — agents can fall back to raw artifacts.
+
+### Step 2: Analyze Each Job Using /microshift-ci:prow-job-evidence
+
+**Goal**: Get detailed root cause analysis for each failed job using evidence packs and pre-downloaded artifacts.
 
 **Actions**:
 
@@ -100,9 +124,7 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
    Agent: subagent_type=general_purpose, prompt="Analyze this Prow job and save the report:
    Job: <JOB_NAME>
    URL: <JOB_URL>
-   Performance graphs (if generated): <WORKDIR>/graphs/<JOB_ID>/
-   MicroShift source (if present): <WORKDIR>/src/microshift/ (for main) or <WORKDIR>/src/microshift-release-<RELEASE>/ (for release branches)
-   1. Run /microshift-ci:prow-job <ARTIFACTS_DIR>
+   1. Run /microshift-ci:prow-job-evidence <WORKDIR>/evidence/evidence-<BUILD_ID>.json
    2. Your goal is the UNDERLYING root cause, not the first error in the log — follow the
       skill's drill-down and causal-chain requirements, consulting the sosreport and the
       performance graphs when relevant.
@@ -119,9 +141,7 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
    Agent: subagent_type=general_purpose, prompt="Analyze this Prow job and save the report:
    Job: <JOB_NAME> (PR #<PR>)
    URL: <JOB_URL>
-   Performance graphs (if generated): <WORKDIR>/graphs/<BUILD_ID>/
-   MicroShift source (if present): <WORKDIR>/src/microshift/
-   1. Run /microshift-ci:prow-job <ARTIFACTS_DIR>
+   1. Run /microshift-ci:prow-job-evidence <WORKDIR>/evidence/evidence-<BUILD_ID>.json
    2. Your goal is the UNDERLYING root cause, not the first error in the log — follow the
       skill's drill-down and causal-chain requirements, consulting the sosreport and the
       performance graphs when relevant.
@@ -234,14 +254,16 @@ HTML report generated: <WORKDIR>/report-microshift-ci-doctor.html
 
 ## Related Skills
 
-- **microshift-ci:prow-job**: Single job analysis (used by Step 2 agents)
+- **microshift-ci:prow-job-evidence**: Evidence-aware job analysis (used by Step 2 agents)
+- **microshift-ci:prow-job**: Standalone job analysis from URL or artifacts directory (for manual use)
 - **microshift-ci:create-bugs**: Bug correlation and creation (used in Step 3; can also be run with `--create` after this command)
 - **microshift-ci:doctor-refresh**: Regenerate the HTML report from existing data (e.g., after `/microshift-ci:create-bugs --create`)
 
 ## Notes
 
-- **Deterministic scripts** handle: data collection, artifact download, aggregation, HTML generation
+- **Deterministic scripts** handle: data collection, artifact download, evidence extraction, aggregation, HTML generation
 - **LLM agents** handle: per-job root cause analysis (Step 2), Jira bug search and open bugs query (Step 3)
+- Step 1c evidence extraction pre-processes all artifacts so Step 2 agents receive structured evidence packs and can skip exploratory log scanning
 - `/microshift-ci:doctor-refresh` regenerates the HTML report from existing data. Use it after `/microshift-ci:create-bugs --create` to include newly created bugs
 - Step 2 agents (per-job analysis) are launched in a single parallel wave
 - Step 3 uses a single create-bugs agent with all sources (releases + rebase) comma-separated
