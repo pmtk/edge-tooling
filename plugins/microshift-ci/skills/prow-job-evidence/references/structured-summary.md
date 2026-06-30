@@ -88,7 +88,7 @@ After the human-readable report above, append a machine-readable JSON block for 
 ## CONFIDENCE Rules
 
 - `high`: every causal-chain link, including the final (root) one, is directly evidenced by a quoted artifact line or graph
-- `medium`: the mechanism is inferred but consistent with all available evidence; no link is contradicted
+- `medium`: the mechanism is inferred but consistent with all available evidence; no link is contradicted. Every causal-chain link MUST still cite an artifact file — `medium` means the *interpretation* is inferred, not that citations can be omitted
 - `low`: the analysis is symptom-level only — the chain stops before an actionable cause because the evidence ran out (`analysis_gaps` MUST be populated in this case)
 
 Do NOT inflate confidence: downstream automation uses it to decide whether to act on the analysis. A `low` confidence report with honest gaps is more useful than a `high` confidence guess.
@@ -136,10 +136,12 @@ The `ROOT_CAUSE` field captures the underlying mechanism behind the failure — 
 
 | ERROR_SIGNATURE | ROOT_CAUSE |
 |---|---|
-| MonitorTest failures (SCC annotations, disruption pollers) on ARM64 | OCP MonitorTest framework incompatible with MicroShift single-node topology |
-| Pod-network-disruption monitor poller CrashLoopBackOff on ARM64 | OCP MonitorTest framework incompatible with MicroShift single-node topology |
+| MonitorTest failures (SCC annotations, disruption pollers) on ARM64 | OCP MonitorTest framework expects multi-node SCC annotations absent in MicroShift |
+| Pod-network-disruption monitor poller CrashLoopBackOff on ARM64 | disruption monitor poller requires multi-node cluster endpoints unavailable in single-node |
 | cert-manager not ready within greenboot 10m timeout on ARM | greenboot health check timeout during slow ARM service deployment |
 | InvalidClientTokenId when calling CreateStack | expired or invalid AWS credentials in CI environment |
+
+Note: ROOT_CAUSE describes the specific mechanism observed in the artifacts, not architectural generalizations. Do not use phrases like "MicroShift is single-node" as a root cause — instead describe what specifically went wrong (e.g., "framework expects annotation X which MicroShift does not set").
 
 ## Multiple Independent Failures
 

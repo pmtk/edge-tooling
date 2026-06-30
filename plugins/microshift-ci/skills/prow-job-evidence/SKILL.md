@@ -83,6 +83,7 @@ The user argument is: `<ARGUMENTS>`
    - Treat restating errors as symptoms: "timed out waiting for X" is NOT a root cause — explain why X was slow or absent.
    - If multiple scenarios failed, decide cascade vs independent using the **timeline**, not error-text similarity.
    - Record every accepted hop as a causal-chain link with its evidence file and line.
+   - **Every causal-chain link MUST cite an artifact file path with line number** (e.g., `artifacts/.../boot_and_run.log:4629`). Do NOT use the evidence JSON itself as a citation — trace each alert back to the raw artifact file it came from (the evidence pack includes `file` and `line` for each match). Do NOT cite "architectural design", general knowledge, or anything that is not a file in the artifacts. If you cannot find an artifact file to support a causal-chain link, drop that link or record it as an analysis gap.
 
 4. **Produce the report**: Read `references/structured-summary.md` for the complete output format. The report must include both a human-readable analysis and the `--- STRUCTURED SUMMARY ---` JSON block.
 

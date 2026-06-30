@@ -128,10 +128,15 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
    2. Your goal is the UNDERLYING root cause, not the first error in the log — follow the
       skill's drill-down and causal-chain requirements, consulting the sosreport and the
       performance graphs when relevant.
-   3. After the analysis completes, save the FULL report output (including the --- STRUCTURED SUMMARY --- block) to:
+   3. Before saving, validate your causal chain: every link MUST have an evidence field
+      containing an artifact file path with :line (e.g. artifacts/.../boot_and_run.log:4629)
+      and a quote field with verbatim text from that file. If any link cites the evidence
+      JSON, general knowledge, or architectural statements instead of an artifact file — fix
+      it now by finding the actual artifact file, or drop the link.
+   4. After validation, save the FULL report output (including the --- STRUCTURED SUMMARY --- block) to:
       <WORKDIR>/jobs/release-<RELEASE>-job-<N>-<JOB_ID>.txt
       Use the Write tool to save the file. The file must contain the complete analysis report.
-   4. After saving, reply with EXACTLY one line: DONE <output-file-path>. Do NOT include the
+   5. After saving, reply with EXACTLY one line: DONE <output-file-path>. Do NOT include the
       report text in your reply."
    ```
 
@@ -145,10 +150,15 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
    2. Your goal is the UNDERLYING root cause, not the first error in the log — follow the
       skill's drill-down and causal-chain requirements, consulting the sosreport and the
       performance graphs when relevant.
-   3. After the analysis completes, save the FULL report output (including the --- STRUCTURED SUMMARY --- block) to:
+   3. Before saving, validate your causal chain: every link MUST have an evidence field
+      containing an artifact file path with :line (e.g. artifacts/.../boot_and_run.log:4629)
+      and a quote field with verbatim text from that file. If any link cites the evidence
+      JSON, general knowledge, or architectural statements instead of an artifact file — fix
+      it now by finding the actual artifact file, or drop the link.
+   4. After validation, save the FULL report output (including the --- STRUCTURED SUMMARY --- block) to:
       <WORKDIR>/jobs/prs-job-<N>-pr<PR>-<JOB_NAME_SUFFIX>.txt
       Use the Write tool to save the file. The file must contain the complete analysis report.
-   4. After saving, reply with EXACTLY one line: DONE <output-file-path>. Do NOT include the
+   5. After saving, reply with EXACTLY one line: DONE <output-file-path>. Do NOT include the
       report text in your reply."
    ```
 
