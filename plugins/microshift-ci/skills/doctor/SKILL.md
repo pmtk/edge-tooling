@@ -166,7 +166,39 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
 
 3. Launch **ALL** agents (all releases + PRs) in a **single message** as **foreground** agents (do NOT use `run_in_background`). Foreground agents in the same message run concurrently — this is just as fast as background agents but keeps your turn active until all complete.
 4. Say "Analyzing N jobs in parallel..." in your message text alongside the Agent tool calls.
-5. When all agents return, immediately proceed to Step 3 in the same turn. Do NOT stop or end your turn between Step 2 and Step 3.
+5. When all agents return, **validate all output files**:
+
+   ```text
+   python3 plugins/microshift-ci/scripts/validate-reports.py <WORKDIR>/jobs/release-*-job-*.txt <WORKDIR>/jobs/prs-job-*.txt
+   ```
+
+   If the script exits 0 (all pass), proceed to Step 3.
+
+   If it exits 1, it prints a `--- VALIDATION FAILURES ---` block listing each failed file and its errors. For each failed file, launch a **fix agent**:
+
+   ```text
+   Agent: subagent_type=general_purpose, prompt="Fix citation errors in a CI analysis report.
+
+   The report at <FAILED_FILE> has causal-chain links that cite the evidence JSON,
+   general knowledge, or lack file paths. The specific errors are:
+   <PASTE ERRORS FOR THIS FILE FROM VALIDATION OUTPUT>
+
+   Fix the report:
+   1. Read the report at <FAILED_FILE>
+   2. For each flagged causal-chain link, find the actual artifact file and line number.
+      The artifacts are under <ARTIFACTS_DIR>. Use Grep to locate the quoted text in the
+      artifact files. The evidence pack at <WORKDIR>/evidence/evidence-<BUILD_ID>.json
+      has file and line fields for each extracted alert — use those to map back to real
+      artifact paths.
+   3. If no artifact supports a causal-chain link, remove that link entirely.
+   4. Rewrite the corrected report (BOTH the human-readable Causal Chain section AND the
+      STRUCTURED SUMMARY JSON causal_chain array) back to <FAILED_FILE>.
+   5. Reply with EXACTLY: FIXED <FAILED_FILE>"
+   ```
+
+   Launch all fix agents in a single message (parallel). Then proceed to Step 3.
+
+6. Proceed to Step 3. Do NOT stop or end your turn between Step 2 and Step 3.
 
 ### Step 3: Run Bug Correlation (Dry-Run)
 
