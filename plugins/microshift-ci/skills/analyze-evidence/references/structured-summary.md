@@ -1,7 +1,7 @@
 # Structured Summary Output Format
 
 Shared output contract for CI job analysis skills. Both `prow-job` (manual)
-and `prow-job-evidence` (automated) produce this identical format, consumed
+and `analyze-evidence` (automated) produce this identical format, consumed
 by `aggregate.py`, `search-bugs.py`, and `create-report.py`.
 
 ## Output Template

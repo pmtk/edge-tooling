@@ -109,7 +109,7 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
 
 3. If the script fails for some jobs, note the errors but continue — agents can fall back to raw artifacts.
 
-### Step 2: Analyze Each Job Using /microshift-ci:prow-job-evidence
+### Step 2: Analyze Each Job Using /microshift-ci:analyze-evidence
 
 **Goal**: Get detailed root cause analysis for each failed job using evidence packs and pre-downloaded artifacts.
 
@@ -124,7 +124,7 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
    Agent: subagent_type=general_purpose, prompt="Analyze this Prow job and save the report:
    Job: <JOB_NAME>
    URL: <JOB_URL>
-   1. Run /microshift-ci:prow-job-evidence <WORKDIR>/evidence/evidence-<BUILD_ID>.json
+   1. Run /microshift-ci:analyze-evidence <WORKDIR>/evidence/evidence-<BUILD_ID>.json
    2. Your goal is the UNDERLYING root cause, not the first error in the log — follow the
       skill's drill-down and causal-chain requirements, consulting the sosreport and the
       performance graphs when relevant.
@@ -146,7 +146,7 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
    Agent: subagent_type=general_purpose, prompt="Analyze this Prow job and save the report:
    Job: <JOB_NAME> (PR #<PR>)
    URL: <JOB_URL>
-   1. Run /microshift-ci:prow-job-evidence <WORKDIR>/evidence/evidence-<BUILD_ID>.json
+   1. Run /microshift-ci:analyze-evidence <WORKDIR>/evidence/evidence-<BUILD_ID>.json
    2. Your goal is the UNDERLYING root cause, not the first error in the log — follow the
       skill's drill-down and causal-chain requirements, consulting the sosreport and the
       performance graphs when relevant.
@@ -296,7 +296,7 @@ HTML report generated: <WORKDIR>/report-microshift-ci-doctor.html
 
 ## Related Skills
 
-- **microshift-ci:prow-job-evidence**: Evidence-aware job analysis (used by Step 2 agents)
+- **microshift-ci:analyze-evidence**: Evidence-aware job analysis (used by Step 2 agents)
 - **microshift-ci:prow-job**: Standalone job analysis from URL or artifacts directory (for manual use)
 - **microshift-ci:create-bugs**: Bug correlation and creation (used in Step 3; can also be run with `--create` after this command)
 - **microshift-ci:doctor-refresh**: Regenerate the HTML report from existing data (e.g., after `/microshift-ci:create-bugs --create`)

@@ -1,17 +1,17 @@
 ---
-name: microshift-ci:prow-job-evidence
+name: microshift-ci:analyze-evidence
 argument-hint: <evidence-pack.json>
 description: Analyze a Prow job from a pre-extracted evidence pack and produce a structured error report
 user-invocable: true
 allowed-tools: Bash, Read, Write, Glob, Grep
 ---
 
-# microshift-ci:prow-job-evidence
+# microshift-ci:analyze-evidence
 
 ## Synopsis
 
 ```bash
-/microshift-ci:prow-job-evidence <evidence-pack.json>
+/microshift-ci:analyze-evidence <evidence-pack.json>
 ```
 
 ## Description
