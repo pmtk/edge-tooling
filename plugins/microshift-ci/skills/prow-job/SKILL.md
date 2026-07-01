@@ -3,14 +3,14 @@ name: microshift-ci:prow-job
 argument-hint: <prow-job-url-or-artifacts-dir>
 description: Download Prow job artifacts, extract evidence, and analyze the failure
 user-invocable: true
-allowed-tools: Skill, Bash, Read, Write, Glob, Grep
+allowed-tools: Bash, Read, Write, Glob, Grep, Agent
 ---
 
 # microshift-ci:prow-job
 
 Analyzes a single Prow CI job. Accepts a Prow URL or local artifacts directory.
-Downloads artifacts if needed, extracts structured evidence, then delegates to
-`/microshift-ci:analyze-evidence` for root cause analysis.
+Downloads artifacts if needed, extracts structured evidence, then spawns an
+analyze-evidence agent for root cause analysis.
 
 ## Arguments
 
@@ -44,7 +44,16 @@ The user argument is: `<ARGUMENTS>`
    ```
    Produces `<WORKDIR>/evidence/evidence-<BUILD_ID>.json`. The `<BUILD_ID>` is the last path component of `<TMP>`.
 
-4. **Analyze**: invoke `/microshift-ci:analyze-evidence <WORKDIR>/evidence/evidence-<BUILD_ID>.json`
+4. **Analyze**: Read `plugins/microshift-ci/agents/analyze-evidence.md`. Substitute placeholders:
+
+   | Placeholder | Value |
+   |---|---|
+   | `{EVIDENCE_PACK}` | `<WORKDIR>/evidence/evidence-<BUILD_ID>.json` |
+   | `{JOB_NAME}` | job name extracted from URL or directory path |
+   | `{JOB_URL}` | the original URL (or reconstruct from artifacts path) |
+   | `{OUTPUT_FILE}` | `<WORKDIR>/report-<BUILD_ID>.txt` |
+
+   Spawn the agent with the substituted content. When it replies `DONE`, read the output file and present the report to the user.
 
 ## Prerequisites
 

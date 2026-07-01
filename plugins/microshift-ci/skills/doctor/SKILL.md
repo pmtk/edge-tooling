@@ -3,7 +3,7 @@ name: microshift-ci:doctor
 argument-hint: <release1,release2,...>
 description: Analyze CI for multiple MicroShift releases and produce an HTML summary
 user-invocable: true
-allowed-tools: Skill, Bash, Read, Write, Glob, Grep, Agent
+allowed-tools: Bash, Read, Write, Glob, Grep, Agent
 ---
 
 # microshift-ci:doctor
@@ -109,60 +109,23 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
 
 3. If the script fails for some jobs, note the errors but continue — agents can fall back to raw artifacts.
 
-### Step 2: Analyze Each Job Using /microshift-ci:analyze-evidence
+### Step 2: Analyze Each Job
 
 **Goal**: Get detailed root cause analysis for each failed job using evidence packs and pre-downloaded artifacts.
 
 **Actions**:
 
 1. Use the JSON summary output from Step 1 to build agent prompts. Do NOT read the job JSON files into the main conversation — the prepare script already printed all job details (artifacts_dir, build_id, job name) and agents receive artifacts_dir directly in their prompt.
-2. For **every** failed job across all releases and PRs, launch a separate **Agent** (using the `Agent` tool, NOT the `Skill` tool). For PR jobs, only launch agents for jobs with FAILURE status.
+2. Read `plugins/microshift-ci/agents/analyze-evidence.md` once. For **every** failed job across all releases and PRs, substitute the `{VARIABLE}` placeholders and launch a separate **Agent** (using the `Agent` tool). For PR jobs, only launch agents for jobs with FAILURE status.
 
-   **For release jobs:**
+   Substitute these placeholders from the prepare script's JSON output (`job`, `url`, `build_id` fields):
 
-   ```text
-   Agent: subagent_type=general_purpose, prompt="Analyze this Prow job and save the report:
-   Job: <JOB_NAME>
-   URL: <JOB_URL>
-   1. Run /microshift-ci:analyze-evidence <WORKDIR>/evidence/evidence-<BUILD_ID>.json
-   2. Your goal is the UNDERLYING root cause, not the first error in the log — follow the
-      skill's drill-down and causal-chain requirements, consulting the sosreport and the
-      performance graphs when relevant.
-   3. Before saving, validate your causal chain: every link MUST have an evidence field
-      containing an artifact file path with :line (e.g. artifacts/.../boot_and_run.log:4629)
-      and a quote field with verbatim text from that file. If any link cites the evidence
-      JSON, general knowledge, or architectural statements instead of an artifact file — fix
-      it now by finding the actual artifact file, or drop the link.
-   4. After validation, save the FULL report output (including the --- STRUCTURED SUMMARY --- block) to:
-      <WORKDIR>/jobs/release-<RELEASE>-job-<N>-<JOB_ID>.txt
-      Use the Write tool to save the file. The file must contain the complete analysis report.
-   5. After saving, reply with EXACTLY one line: DONE <output-file-path>. Do NOT include the
-      report text in your reply."
-   ```
-
-   **For PR jobs:**
-
-   ```text
-   Agent: subagent_type=general_purpose, prompt="Analyze this Prow job and save the report:
-   Job: <JOB_NAME> (PR #<PR>)
-   URL: <JOB_URL>
-   1. Run /microshift-ci:analyze-evidence <WORKDIR>/evidence/evidence-<BUILD_ID>.json
-   2. Your goal is the UNDERLYING root cause, not the first error in the log — follow the
-      skill's drill-down and causal-chain requirements, consulting the sosreport and the
-      performance graphs when relevant.
-   3. Before saving, validate your causal chain: every link MUST have an evidence field
-      containing an artifact file path with :line (e.g. artifacts/.../boot_and_run.log:4629)
-      and a quote field with verbatim text from that file. If any link cites the evidence
-      JSON, general knowledge, or architectural statements instead of an artifact file — fix
-      it now by finding the actual artifact file, or drop the link.
-   4. After validation, save the FULL report output (including the --- STRUCTURED SUMMARY --- block) to:
-      <WORKDIR>/jobs/prs-job-<N>-pr<PR>-<JOB_NAME_SUFFIX>.txt
-      Use the Write tool to save the file. The file must contain the complete analysis report.
-   5. After saving, reply with EXACTLY one line: DONE <output-file-path>. Do NOT include the
-      report text in your reply."
-   ```
-
-   Substitute `<JOB_NAME>`, `<JOB_URL>`, and `<JOB_ID>`/`<BUILD_ID>` from the prepare script's JSON output (`job`, `url`, `build_id` fields).
+   | Placeholder | Value |
+   |---|---|
+   | `{EVIDENCE_PACK}` | `<WORKDIR>/evidence/evidence-<BUILD_ID>.json` |
+   | `{JOB_NAME}` | `job` field (for PR jobs, append ` (PR #<PR>)`) |
+   | `{JOB_URL}` | `url` field |
+   | `{OUTPUT_FILE}` | Release: `<WORKDIR>/jobs/release-<RELEASE>-job-<N>-<JOB_ID>.txt`. PR: `<WORKDIR>/jobs/prs-job-<N>-pr<PR>-<JOB_NAME_SUFFIX>.txt` |
 
 3. Launch **ALL** agents (all releases + PRs) in a **single message** as **foreground** agents (do NOT use `run_in_background`). Foreground agents in the same message run concurrently — this is just as fast as background agents but keeps your turn active until all complete.
 4. Say "Analyzing N jobs in parallel..." in your message text alongside the Agent tool calls.
@@ -294,9 +257,9 @@ HTML report generated: <WORKDIR>/report-microshift-ci-doctor.html
 - `pcp-export-pcp2json` — for PCP graph generation
 - `matplotlib` Python package — for PCP graph plotting
 
-## Related Skills
+## Related Skills and Agents
 
-- **microshift-ci:analyze-evidence**: Evidence-aware job analysis (used by Step 2 agents)
+- **agents/analyze-evidence.md**: Evidence-aware job analysis agent (used by Step 2 — read, substitute, spawn)
 - **microshift-ci:prow-job**: Standalone job analysis from URL or artifacts directory (for manual use)
 - **microshift-ci:create-bugs**: Bug correlation and creation (used in Step 3; can also be run with `--create` after this command)
 - **microshift-ci:doctor-refresh**: Regenerate the HTML report from existing data (e.g., after `/microshift-ci:create-bugs --create`)
@@ -305,11 +268,11 @@ HTML report generated: <WORKDIR>/report-microshift-ci-doctor.html
 
 - **Deterministic scripts** handle: data collection, artifact download, evidence extraction, aggregation, HTML generation
 - **LLM agents** handle: per-job root cause analysis (Step 2), Jira bug search and open bugs query (Step 3)
-- Step 1c evidence extraction pre-processes all artifacts so Step 2 agents receive structured evidence packs and can skip exploratory log scanning
+- Step 1c evidence extraction pre-processes all artifacts so Step 2 agents (from `plugins/microshift-ci/agents/analyze-evidence.md`) receive structured evidence packs and can skip exploratory log scanning
 - `/microshift-ci:doctor-refresh` regenerates the HTML report from existing data. Use it after `/microshift-ci:create-bugs --create` to include newly created bugs
 - Step 2 agents (per-job analysis) are launched in a single parallel wave
 - Step 3 uses a single create-bugs agent with all sources (releases + rebase) comma-separated
-- The `prepare` script downloads all artifacts upfront so prow-job agents use local paths (no redundant downloads)
+- The `prepare` script downloads all artifacts upfront so analysis agents use local paths (no redundant downloads)
 - The `prepare` script also clones the MicroShift source to `<WORKDIR>/src/microshift` with per-release worktrees (`--repo openshift/microshift`); clone failure is non-fatal — agents record the absence in `analysis_gaps` and proceed
 - The `finalize` script runs aggregation and HTML generation in one call
 - All intermediate files use prescribed filenames in `<WORKDIR>` subdirectories (`jobs/`, `bugs/`) — no improvised names
