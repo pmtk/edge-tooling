@@ -471,6 +471,23 @@ def _extract_journal_alerts(journal_path):
     return alerts
 
 
+_CREATED_CONTAINER_RE = re.compile(r"Created container [0-9a-f]+:\s*(\S+/\S+)/\S+")
+
+
+def _group_container_restarts(entries):
+    """Group 'Created container' journal entries by pod, flag pods with >1 creation."""
+    pod_counts = {}
+    for entry in entries:
+        m = _CREATED_CONTAINER_RE.search(entry.get("text", ""))
+        if m:
+            pod = m.group(1)
+            pod_counts[pod] = pod_counts.get(pod, 0) + 1
+    return sorted(
+        [{"pod": pod, "count": count} for pod, count in pod_counts.items() if count > 1],
+        key=lambda x: -x["count"],
+    )
+
+
 def _find_sosreports(scenario_dir):
     tarballs = _find_glob(os.path.join(scenario_dir, "vms", "*", "sos"), "sosreport-*.tar.xz")
     results = []
@@ -524,6 +541,10 @@ def extract_scenarios(artifacts_dir, test_name, step_name, workdir):
             alerts = _extract_journal_alerts(jp)
             for label, entries in alerts.items():
                 journal_alerts.setdefault(label, []).extend(entries)
+
+        container_restarts = _group_container_restarts(
+            journal_alerts.get("container_restarts", [])
+        )
 
         greenboot_status = None
         for entry in journal_alerts.get("greenboot_verdicts", []):
@@ -582,6 +603,7 @@ def extract_scenarios(artifacts_dir, test_name, step_name, workdir):
             "rf_failures": rf_failures,
             "boot_and_run_alerts": boot_alerts,
             "journal_alerts": journal_alerts,
+            "container_restarts": container_restarts,
             "timeout_cascade": timeout_cascade,
             "greenboot_status": greenboot_status,
             "sosreport_paths": sosreports,
