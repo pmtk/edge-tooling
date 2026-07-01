@@ -132,6 +132,14 @@ def _find_glob(base, pattern):
     return sorted(glob_mod.glob(os.path.join(base, pattern)))
 
 
+_JOURNAL_TS_RE = re.compile(r"^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})")
+
+
+def _parse_journal_timestamp(text):
+    m = _JOURNAL_TS_RE.match(text)
+    return m.group(1) if m else ""
+
+
 def _timestamp_from_epoch(epoch):
     try:
         return datetime.fromtimestamp(int(epoch), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -388,14 +396,14 @@ def scan_infra_indicators(artifacts_dir):
 # ---------------------------------------------------------------------------
 
 def _parse_junit(path):
-    """Parse junit.xml → list of {name, classname, status, message}."""
+    """Parse junit.xml → list of {name, classname, status, message, time_s}, counts, suite_timestamp."""
     try:
         tree = ET.parse(path)
     except (ET.ParseError, OSError):
-        return [], 0, 0
+        return [], 0, 0, ""
 
     root = tree.getroot()
-    suite_name = root.get("name", "")
+    suite_timestamp = root.get("timestamp", "")
     tests = int(root.get("tests", 0))
     failures = int(root.get("failures", 0))
 
@@ -404,6 +412,7 @@ def _parse_junit(path):
         entry = {
             "name": tc.get("name", ""),
             "classname": tc.get("classname", ""),
+            "time_s": tc.get("time", ""),
         }
         fail = tc.find("failure")
         if fail is not None:
@@ -414,7 +423,7 @@ def _parse_junit(path):
             entry["message"] = ""
         results.append(entry)
 
-    return results, tests, failures
+    return results, tests, failures, suite_timestamp
 
 
 def _extract_rf_failures(path):
@@ -453,7 +462,11 @@ def _extract_journal_alerts(journal_path):
         entries = []
         for h in hits:
             line_num, text = _parse_grep_line(h)
-            entries.append({"line": line_num, "text": text[:300]})
+            entries.append({
+                "line": line_num,
+                "text": text[:300],
+                "timestamp": _parse_journal_timestamp(text),
+            })
         alerts[label] = entries
     return alerts
 
@@ -496,10 +509,10 @@ def extract_scenarios(artifacts_dir, test_name, step_name, workdir):
         has_boot_run = os.path.isfile(boot_run_path)
         sosreports = _find_sosreports(sdir)
 
-        test_failures, test_count, failure_count = _parse_junit(junit_path) if has_junit else ([], 0, 0)
+        test_failures, test_count, failure_count, suite_timestamp = _parse_junit(junit_path) if has_junit else ([], 0, 0, "")
         test_failures = [t for t in test_failures if t["status"] == "FAILED"]
 
-        infra_results, _, infra_fail_count = _parse_junit(phase_junit_path) if os.path.isfile(phase_junit_path) else ([], 0, 0)
+        infra_results, _, infra_fail_count, _ = _parse_junit(phase_junit_path) if os.path.isfile(phase_junit_path) else ([], 0, 0, "")
         infra_failures = [t["name"] for t in infra_results if t["status"] == "FAILED"]
 
         rf_failures = _extract_rf_failures(rf_debug_path) if has_rf_debug else []
@@ -562,6 +575,7 @@ def extract_scenarios(artifacts_dir, test_name, step_name, workdir):
                 "result": "FAILED" if infra_failures else "PASSED",
                 "failures": infra_failures,
             },
+            "junit_suite_timestamp": suite_timestamp,
             "test_count": test_count,
             "failure_count": failure_count,
             "test_failures": test_failures,
@@ -591,7 +605,7 @@ def extract_conformance_failures(artifacts_dir, test_name, step_name):
 
     failures = []
     for jf in junit_files:
-        results, _, _ = _parse_junit(jf)
+        results, _, _, _ = _parse_junit(jf)
         for tc in results:
             if tc["status"] == "FAILED":
                 failures.append({
@@ -727,6 +741,106 @@ def find_pcp_graphs(workdir, build_id):
 
 
 # ---------------------------------------------------------------------------
+# Phase J: Failure timeline
+# ---------------------------------------------------------------------------
+
+_FAILURE_JOURNAL_CATEGORIES = {
+    "oom_kills", "panics", "segfaults", "service_failures", "fatal_errors",
+    "etcd_pressure", "ovn_binding", "x509_errors", "disk_pressure",
+    "apiserver_issues",
+}
+
+
+def _resolve_journal_ts(ts_str, year):
+    """Convert 'Jun 30 03:58:39' + year → '2026-06-30T03:58:39Z'."""
+    try:
+        dt = datetime.strptime(f"{year} {ts_str}", "%Y %b %d %H:%M:%S")
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, TypeError):
+        return ""
+
+
+def _build_failure_timeline(scenarios, meta):
+    started = meta.get("started", "")
+    year = ""
+    if started:
+        try:
+            year = started[:4]
+        except (IndexError, TypeError):
+            pass
+    if not year:
+        finished = meta.get("finished", "")
+        if finished:
+            year = finished[:4]
+    if not year:
+        return []
+
+    timeline = []
+    for scenario in scenarios:
+        name = scenario.get("name", "")
+        has_test_failures = scenario.get("failure_count", 0) > 0
+        infra_failed = scenario.get("infra_phase", {}).get("result") == "FAILED"
+
+        journal_alerts = scenario.get("journal_alerts", {})
+        has_problem_alerts = any(
+            journal_alerts.get(cat)
+            for cat in _FAILURE_JOURNAL_CATEGORIES
+        )
+
+        if not has_test_failures and not infra_failed and not has_problem_alerts:
+            continue
+
+        earliest_ts = ""
+        earliest_source = ""
+        earliest_detail = ""
+
+        for cat in _FAILURE_JOURNAL_CATEGORIES:
+            for entry in journal_alerts.get(cat, []):
+                raw_ts = entry.get("timestamp", "")
+                if not raw_ts:
+                    continue
+                resolved = _resolve_journal_ts(raw_ts, year)
+                if resolved and (not earliest_ts or resolved < earliest_ts):
+                    earliest_ts = resolved
+                    earliest_source = "journal"
+                    earliest_detail = f"{cat}: {entry.get('text', '')[:80]}"
+
+        suite_ts = scenario.get("junit_suite_timestamp", "")
+        if suite_ts:
+            normalized = suite_ts
+            if len(normalized) >= 19 and "T" not in normalized:
+                normalized = normalized[:10] + "T" + normalized[11:19] + "Z"
+            elif not normalized.endswith("Z") and "+" not in normalized:
+                normalized = normalized.rstrip() + "Z"
+            if not earliest_ts or normalized < earliest_ts:
+                earliest_ts = normalized
+                earliest_source = "junit"
+                detail_parts = [t.get("name", "") for t in scenario.get("test_failures", [])[:2]]
+                earliest_detail = "; ".join(detail_parts)[:80] if detail_parts else "test suite"
+
+        for alert in scenario.get("boot_and_run_alerts", []):
+            raw_ts = _parse_journal_timestamp(alert.get("text", ""))
+            if not raw_ts:
+                continue
+            resolved = _resolve_journal_ts(raw_ts, year)
+            if resolved and (not earliest_ts or resolved < earliest_ts):
+                earliest_ts = resolved
+                earliest_source = "boot_and_run"
+                earliest_detail = alert.get("text", "")[:80]
+
+        if earliest_ts:
+            timeline.append({
+                "scenario": name,
+                "earliest_failure": earliest_ts,
+                "source": earliest_source,
+                "detail": earliest_detail,
+            })
+
+    timeline.sort(key=lambda e: e["earliest_failure"])
+    return timeline
+
+
+# ---------------------------------------------------------------------------
 # Main extraction
 # ---------------------------------------------------------------------------
 
@@ -755,6 +869,8 @@ def extract_evidence(artifacts_dir, workdir):
     if not failed_step["name"] and infra["is_infra_failure"]:
         build_errors = _extract_errors_from_main_log(artifacts_dir)
 
+    failure_timeline = _build_failure_timeline(scenarios, meta)
+
     source = extract_source_context(workdir, meta["release"], meta["finished_epoch"])
     pcp_graphs = find_pcp_graphs(workdir, meta["build_id"])
 
@@ -772,6 +888,7 @@ def extract_evidence(artifacts_dir, workdir):
         "failed_step": failed_step,
         "infrastructure_indicators": infra,
         "scenarios": scenarios,
+        "failure_timeline": failure_timeline,
         "conformance_failures": conformance_failures,
         "build_errors": build_errors,
         "pcp_graphs": pcp_graphs,
