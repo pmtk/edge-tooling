@@ -57,7 +57,9 @@ The user argument is: `<ARGUMENTS>`
    - **`source_checkout`** — path to source checkout and recent commits
    - **`analysis_gaps`** — what evidence is missing at the job level
 
-2. **Assess the failure** from the structured evidence:
+2. **Read the CI primer** at `references/microshift-ci-primer.md` for artifact layout, scenario naming conventions, test framework details, and common failure patterns.
+
+3. **Assess the failure** from the structured evidence:
 
    - If `infrastructure_indicators.is_infra_failure` is true: confirm from the matched patterns and anchor error, then produce the report.
    - If `job_type` is `scenario-e2e`: examine each scenario's `journal_alerts`, `boot_and_run_alerts`, `rf_failures`, and `test_failures`. Identify which scenarios failed independently vs. cascaded. Use the timeline (which failed first).
@@ -65,7 +67,7 @@ The user argument is: `<ARGUMENTS>`
    - If `job_type` is `build`/`config`/`rebase`: examine `build_errors` for the specific error with context.
    - If the evidence pack shows no `failed_step` (null or empty) and no error indicators across all categories, the job passed. Produce a minimal report noting "job completed successfully" with severity 1 and `infrastructure_failure: false`. Do NOT drill down.
 
-3. **Drill down** — iterate hypothesis → evidence until the cause is actionable:
+4. **Drill down** — iterate hypothesis → evidence until the cause is actionable:
 
    Start from the evidence pack's alerts and errors. For each hypothesis:
    - Check if the evidence pack already contains confirming/refuting data
@@ -85,7 +87,7 @@ The user argument is: `<ARGUMENTS>`
    - Record every accepted hop as a causal-chain link with its evidence file and line.
    - **Every causal-chain link MUST cite an artifact file path with line number** (e.g., `artifacts/.../boot_and_run.log:4629`). Do NOT use the evidence JSON itself as a citation — trace each alert back to the raw artifact file it came from (the evidence pack includes `file` and `line` for each match). Do NOT cite "architectural design", general knowledge, or anything that is not a file in the artifacts. If you cannot find an artifact file to support a causal-chain link, drop that link or record it as an analysis gap.
 
-4. **Produce the report**: Read `references/structured-summary.md` for the complete output format. The report must include both a human-readable analysis and the `--- STRUCTURED SUMMARY ---` JSON block.
+5. **Produce the report**: Read `references/structured-summary.md` for the complete output format. The report must include both a human-readable analysis and the `--- STRUCTURED SUMMARY ---` JSON block.
 
    **Feedback loop:** When you read a raw artifact file and find evidence that was NOT in the evidence pack, include a `missing_patterns` entry in the STRUCTURED SUMMARY:
 
