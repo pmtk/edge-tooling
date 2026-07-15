@@ -6,11 +6,7 @@ which question".
 
 ## CI structure terms
 
-- **ci-config**: Top level configuration file specifying build inputs, versions, and test workflows. Periodic tests are suffixed with `__periodic.yaml`.
-- **test**: Configurations and commands specifying how to execute a test. Defined in-line in ci-config, or as individual "steps".
-- **step**: Smallest test infrastructure component. A step yaml specifies the command, environment variables, and metadata. Also called "ref" or "step ref".
-- **chain**: A yaml specifying steps or chains in an array, executed serially. May override step environment variable values.
-- **workflow**: A yaml specifying steps, chains, or workflows in an array, executed serially. Typically referenced by a test in a ci-config.
+- **step**: Smallest CI test infrastructure component — a single command/script with its environment. Also called "ref". Each step logs to its own `build-log.txt`.
 - **scenario**: A Robot Framework suite together with its test environment, MicroShift deployment, and VM. Includes the deployment method: rpm-ostree, rpm, or bootc container.
 
 ## Job types
@@ -25,49 +21,16 @@ which question".
 
 ## Test framework
 
-Tests are written in Robot Framework.
-Suites live in `test/suites/` as `.robot` files. Shared keywords and
-Python helpers live in `test/resources/` (e.g. `common.resource`,
-`microshift-host.resource`, `ostree.resource`, `sos-on-failure-listener.py`).
-Each scenario defines which suites to run, the VM image to boot, and
-any Robot variables (e.g. `EXPECTED_OS_VERSION`, `TARGET_REF`).
+Tests use Robot Framework — suites in `test/suites/` as `.robot` files,
+failures marked with `| FAIL |` in `rf-debug.log`. Test execution order
+is randomized by default, so ordering in logs varies between runs.
 
-Key runtime settings (overridable per scenario):
+## Deployment types
 
-- `TEST_EXECUTION_TIMEOUT` — default `30m`; the scenario runner wraps
-  Robot Framework in `timeout -v --kill-after=5m <timeout>`. When the
-  suite total exceeds this, the current test dies with
-  `Execution terminated by signal` and every subsequent test reports
-  `Test execution stopped due to a fatal error` — a cascade with ONE
-  root cause (the time budget), not independent failures.
-- `TEST_RANDOMIZATION` — default `all`; tests run in random order, so
-  test ordering in `rf-debug.log` varies between runs.
-- `TEST_EXCLUDES` — tag-based exclusion (default `none`).
-
-## Deployment types: ostree vs bootc vs RPM
-
-There are three distinct deployment pipelines for MicroShift on VMs.
-Scenarios (`.sh` files) are the same structure for all three, but how
-MicroShift gets onto the VM differs:
-
-- **ostree (rpm-ostree)** — images defined as TOML blueprints in
-  `test/image-blueprints/`. Built by `osbuild-composer` into
-  edge-commit images, installed via kickstart + ISO. Scenarios live
-  under `test/scenarios/`.
-- **bootc** — images defined as Containerfiles (with Go template
-  support) in `test/image-blueprints-bootc/`. Built as OCI container
-  images, installed via bootc. Scenarios live under
-  `test/scenarios-bootc/`.
-- **RPM** — a non-ostree RHEL system installed from a live image
-  (`kickstart-liveimg.ks.template` with `main-liveimg.cfg`), similar
-  to isolated/offline scenarios. MicroShift may be pre-installed in the
-  image or installed at test time via `dnf` from source-built or Brew
-  RPM repos. RPM suites live in `test/suites/rpm/` (install,
-  upgrade, remove).
-
-The job name indicates which pipeline was used (e.g.
-`e2e-aws-tests-bootc-*` vs `e2e-aws-tests-*`). All three produce the
-same artifact layout under `scenario-info/`.
+Three deployment pipelines: ostree (`test/scenarios/`), bootc
+(`test/scenarios-bootc/`), and RPM (`test/suites/rpm/`). The job name
+indicates which (`e2e-aws-tests-bootc-*` = bootc, `e2e-aws-tests-*` =
+ostree). All three produce the same artifact layout under `scenario-info/`.
 
 ## Scenario naming
 
@@ -103,49 +66,23 @@ intermediate upgrades → final image → test suite.
 
 The last `@`-segment is always the test suite or test type.
 
-### Suite tokens
-
-`standard1`/`standard2`, `lvm`, `dual-stack`, `ipv6`, `multi-nic`,
-`low-latency`, `ginkgo-tests`, `ai-model-serving-online`, `osconfig`,
-`storage`, `tlsv13-*`, `multi-config-*`, `c2cc`, `c2cc-ipv6`,
-`c2cc-ipsec`, `upgrade-ok`, `upgrade-fails-*`, `auto-recovery`,
-`greenboot`, `fips`, `offline`, `isolated-net`, `cncf-conformance`,
-`rpm-*`, `delta-upgrade-*`
-
-### Disabled scenarios
-
-Scenario files ending in `.sh.disabled` are skipped by the CI runner.
-They appear in the repo but produce no artifacts.
-
-Scenario definitions (what each one deploys and runs) live in
-openshift/microshift under `test/scenarios*/` (e.g.
+Scenario definitions live in `test/scenarios*/` (e.g.
 `test/scenarios-bootc/el9/`); Robot Framework suites under
 `test/suites/`.
 
 ## How scenarios run in CI
 
-All scenarios run **in parallel** via GNU `parallel`:
+All scenarios run in parallel on a single hypervisor. Each executes
+two phases:
 
-```text
-parallel --results <scenario-info>/{/.}/boot_and_run.log \
-    --delay 5 \
-    bash -x ./bin/scenario.sh create-and-run ::: <scenarios>/*.sh
-```
+1. **create** — boot VMs, wait for greenboot health check.
+   Infrastructure junit: `phase_create/junit.xml`.
+2. **run** — execute Robot Framework tests.
+   Infrastructure junit: `phase_run/junit.xml`.
 
-`create-and-run` executes two phases per scenario:
-
-1. **create** (`action_create`) — load scenario script, create VMs,
-   wait for greenboot health check, collect SOS report + PCP archives
-   on failure. Infrastructure junit goes to `phase_create/junit.xml`.
-2. **run** (`action_run`) — execute `scenario_run_tests()` (which calls
-   Robot Framework), collect SOS + PCP on failure. Infrastructure junit
-   goes to `phase_run/junit.xml`.
-
-Because scenarios run in parallel on the same hypervisor, resource
-contention (CPU, disk I/O, memory) can cause timeouts that don't
-reproduce in isolation. These are infrastructure failures — still
-report them, but attribute them to shared-hypervisor contention rather
-than a product or test bug.
+Resource contention (CPU, disk I/O, memory) from parallel scenarios
+can cause timeouts that don't reproduce in isolation — attribute these
+to shared-hypervisor contention, not product/test bugs.
 
 ## Where the evidence lives
 
