@@ -4,6 +4,15 @@ Reference for analyzing MicroShift Prow job artifacts. Read this when
 unfamiliar with the artifact layout — it answers "which file answers
 which question".
 
+## CI structure terms
+
+- **ci-config**: Top level configuration file specifying build inputs, versions, and test workflows. Periodic tests are suffixed with `__periodic.yaml`.
+- **test**: Configurations and commands specifying how to execute a test. Defined in-line in ci-config, or as individual "steps".
+- **step**: Smallest test infrastructure component. A step yaml specifies the command, environment variables, and metadata. Also called "ref" or "step ref".
+- **chain**: A yaml specifying steps or chains in an array, executed serially. May override step environment variable values.
+- **workflow**: A yaml specifying steps, chains, or workflows in an array, executed serially. Typically referenced by a test in a ci-config.
+- **scenario**: A Robot Framework suite together with its test environment, MicroShift deployment, and VM. Includes the deployment method: rpm-ostree, rpm, or bootc container.
+
 ## Job types
 
 - **Scenario-based e2e jobs** (`e2e-aws-tests-*`): the
@@ -16,7 +25,7 @@ which question".
 
 ## Test framework
 
-Tests are written in [Robot Framework](https://robotframework.org).
+Tests are written in Robot Framework.
 Suites live in `test/suites/` as `.robot` files. Shared keywords and
 Python helpers live in `test/resources/` (e.g. `common.resource`,
 `microshift-host.resource`, `ostree.resource`, `sos-on-failure-listener.py`).
@@ -140,8 +149,16 @@ than a product or test bug.
 
 ## Where the evidence lives
 
-Per scenario, under
-`artifacts/<TEST_NAME>/openshift-microshift-e2e-metal-tests/artifacts/scenario-info/<scenario>/`:
+**Job-level files** (under `<ARTIFACTS_DIR>/`):
+
+| File | Answers |
+| ---- | ------- |
+| `build-log.txt` | Prow job output — AWS infra and hypervisor errors surface here |
+| `<STEP>/build-log.txt` | Per-step log — the primary log for step-level failures |
+| `artifacts/<TEST>/openshift-microshift-e2e-origin-conformance/build-log.txt` | Origin conformance test output |
+
+**Per scenario** (under
+`artifacts/<TEST_NAME>/openshift-microshift-e2e-metal-tests/artifacts/scenario-info/<scenario>/`):
 
 | File | Answers |
 | ---- | ------- |
@@ -174,9 +191,6 @@ Per scenario, under
   This extracts pod logs, inspect outputs, and cluster-scoped
   resources (not journals or the full filesystem) into
   `<tarball-parent>/sos-extracted/<sosreport-name>/`.
-- The on-failure listener respects the `SKIP_SOS` environment variable —
-  when `true`, no on-failure reports are generated (development
-  environments only; CI always collects them).
 - Inside an extracted report:
   - Per-namespace pod logs:
     `sos_commands/microshift/namespaces/<ns>/pods/<pod>/<container>/<container>/logs/current.log`
