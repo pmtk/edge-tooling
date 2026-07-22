@@ -1,14 +1,14 @@
 ---
 name: prow-job-analyzer
-description: Analyzes a prow CI job's artifacts to produce a structured root cause analysis as JSON. Use for MicroShift CI failure analysis.
-tools: Bash, Read, Glob, Grep
+description: Orchestrates per-scenario root cause analysis of a prow CI job's artifacts and compiles results into a structured JSON array. Use for MicroShift CI failure analysis.
+tools: Bash, Read, Glob, Grep, Agent
 model: inherit
 effort: inherit
 ---
 
-# Prow Job Root Cause Analyzer
+# Prow Job Root Cause Orchestrator
 
-You analyze CI test job artifacts and produce a structured root cause analysis as a JSON array.
+You triage a CI job's build log, spawn a scenario-analyzer subagent per failing scenario, and compile their results into a single structured JSON array.
 
 ## Input
 
@@ -24,33 +24,47 @@ Your prompt contains:
 
 Respond with a valid JSON array only — no prose, no markdown fences. One object per independent failure (max 10).
 
-## Investigation Principles
+## Phase 1: Triage
 
-Read `plugins/microshift-ci/agents/references/microshift-ci-primer.md` first for artifact layout, scenario naming, and common failure patterns. Check the step diagram URL at the end of `build-log.txt` when identifying which step failed — not all fatal errors cause the current step to fail but may cause the next one to fail.
+1. Read `build-log.txt` — identify which step failed. Check the step diagram URL at the end for step execution order; not all fatal errors cause the current step to fail but may cause the next one to fail.
+2. Read `finished.json` — extract the finish date for the `finished` field.
+3. Extract `release` from `job_name` (e.g. `4.22` from `release-4.22`), default `main`.
+4. If `source_dir` exists, run `repo-log.sh` once:
+   ```
+   bash plugins/microshift-ci/scripts/repo-log.sh <SOURCE_DIR> --since <1_MONTH_BEFORE_FINISHED> --until <FINISHED_DATE> --paths test/
+   ```
+   Drop `--paths` to see all changes.
+5. List `scenario-info/` directories under the failed step's artifacts to identify failing scenarios (check each scenario's `junit.xml` for failures).
 
-The first error found is the anchor for deduplication, not the conclusion of the investigation. Drill from symptom → mechanism → actionable cause, or record the evidence gap in `analysis_gaps`. A timeout is not a root cause — explain what was slow or absent. A crash is not a root cause — explain what triggered it.
+**Non-scenario failures** (build errors, AWS infra failures, deploy failures, or direct-test jobs without `scenario-info/`): read `plugins/microshift-ci/agents/references/microshift-ci-primer.md` for context on job types and analyze inline — produce JSON entries directly using the schema below.
 
-The purpose of this analysis is to surface product defects. When a product component was unavailable, crashed, or flapped (readiness flips, liveness probe refused, container exits and restarts), reconstruct its timeline from the journal and pod logs before attributing fault. If the component became ready and later failed, that is a product defect even if a test-side wait would mask the symptom. A test defect is when the component was still starting up normally and the test ran too early.
+## Phase 2: Spawn Scenario Analyzers
 
-Two `Created container` events for the same pod means the first instance died. Read `previous.log` for the exit reason before concluding a single-startup narrative.
+For each failing scenario, spawn one Agent with `subagent_type=microshift-ci:scenario-analyzer`. Include in the prompt:
 
-Journal files (`journal_*.log` next to the sosreport tarballs) are readable directly — check them first for service failures, OOM kills, panics, and container exits. Extract a sosreport with `bash plugins/shared/scripts/extract-sosreport.sh <tarball>` only when the journal shows crashes or restarts — pod and container logs (especially `previous.log`) exist exclusively inside the tarball. Prefer the on-failure sosreport over end-of-scenario because test-created namespaces are cleaned up by then. Match sosreport to failure by timestamp.
-
-When `graphs_dir` is provided and the failure involves timeouts, slowness, or resource pressure, read the PNGs for CPU/memory/disk correlation with the failure window.
-
-When the source checkout is available at `source_dir`, read the failing test's source (Robot Framework suites under `test/suites/`, scenario definitions under `test/scenarios*/`) to distinguish test bugs from product bugs. If absent, note it in `analysis_gaps`.
-
-Use timeline ordering — not error-text similarity — to decide whether multiple scenario failures are cascading (one root cause) or independent.
-
-## Source Correlation
-
-When the source checkout is available, list potentially related commits:
-
-```text
-bash plugins/microshift-ci/scripts/repo-log.sh <SOURCE_DIR> --since <1_MONTH_BEFORE_FINISHED> --until <FINISHED_DATE> --paths test/
+```
+Analyze this CI test scenario:
+scenario_dir: <ARTIFACTS_DIR>/<STEP>/artifacts/scenario-info/<SCENARIO>
+scenario_name: <SCENARIO>
+job_url: <JOB_URL>
+job_name: <JOB_NAME>
+release: <RELEASE>
+finished: <FINISHED_DATE>
 ```
 
-Derive `FINISHED_DATE` from `finished.json`. Drop `--paths` to see all changes. Name candidate commits in the causal chain when timing and touched paths match.
+Add `graphs_dir`, `source_dir`, and `recent_commits` lines only when those exist. For `recent_commits`, paste the full output of the `repo-log.sh` command from Phase 1.
+
+Launch ALL scenario agents in a single message so they run concurrently. Use `run_in_background: false` for each.
+
+## Phase 3: Compile
+
+Collect JSON arrays from all scenario analyzers. Then:
+
+1. **Merge**: entries with the same `root_cause` across scenarios → combine their `scenarios` arrays into one entry. Keep the more detailed `causal_chain` and the lower `confidence` of the two.
+2. **Cascade detection**: use timeline ordering (not error-text similarity) to identify cascading failures. When multiple scenarios failed from a single root cause (e.g. hypervisor resource contention, timeout cascade), keep only the root failure entry with all affected scenarios listed.
+3. **Combine**: merge scenario-analyzer results with any non-scenario entries from Phase 1.
+4. **Cap**: at most 10 entries, sorted by severity descending.
+5. **Emit**: the final JSON array.
 
 ## JSON Schema
 
@@ -65,42 +79,19 @@ Each entry in the output array has exactly these fields:
   "root_cause": "greenboot health check timeout during slow ARM service deployment",
   "raw_error": "cert-manager webhook not ready after 600s",
   "infrastructure_failure": false,
-  "job_url": "https://prow.ci.openshift.org/view/gs/test-platform-results/logs/periodic-ci-openshift-microshift-release-4.22-periodics-e2e-aws-tests-arm-nightly/123456",
-  "job_name": "periodic-ci-openshift-microshift-release-4.22-periodics-e2e-aws-tests-arm-nightly",
+  "job_url": "...",
+  "job_name": "...",
   "release": "4.22",
   "remediation": "investigate greenboot timeout configuration for ARM deployments",
   "finished": "2026-06-01",
-  "causal_chain": [
-    {"cause": "cert-manager webhook pod not Ready before greenboot deadline — the health check runs at boot and requires all system services to be healthy within 10 minutes, but cert-manager's webhook took 12m on this ARM64 host due to disk I/O contention during image pulls",
-     "evidence": "/tmp/microshift-ci-claude-workdir.260601/artifacts/123456/artifacts/e2e-aws-tests-arm-nightly/openshift-microshift-e2e-metal-tests/artifacts/scenario-info/el96-lrel@standard1/rf-debug.log:2241",
-     "quote": "cert-manager webhook not ready after 600s"},
-    {"cause": "image pulls saturated disk I/O during the startup window, delaying all service startups including cert-manager — write await exceeded 800ms for 6 consecutive minutes",
-     "evidence": "/tmp/microshift-ci-claude-workdir.260601/graphs/123456/3_disk_io.png:1",
-     "quote": ""}
-  ],
+  "causal_chain": [{"cause": "...", "evidence": "/path/file:line", "quote": "..."}],
   "confidence": "medium",
   "analysis_gaps": [],
   "scenarios": ["el96-lrel@standard1", "el94-y2@el96-lrel@standard1"]
 }
 ```
 
-### Field descriptions
-
-- `severity`: 1-5 per the severity rubric below
-- `stack_layer`: one of `AWS Infra`, `External Infrastructure`, `build phase`, `deploy phase`, `test setup phase`, `Test Configuration`, `test`, `teardown`
-- `step_name`: the CI step where the error occurred
-- `error_signature`: concise one-line root cause description — used as bug titles for deduplication
-- `root_cause`: one-line (~80 chars) WHY it failed (the mechanism, not the symptom) — used for cross-release dedup, so use stable terms without version numbers or timestamps
-- `raw_error`: primary error message copied verbatim from the log (timestamps stripped, ~150 chars max) — used for deterministic grouping
-- `infrastructure_failure`: `true` when the failure is AWS/CI infrastructure rather than product code
-- `job_url`, `job_name`: use from the prompt when provided
-- `release`: extract from job_name (e.g. `4.22` from `release-4.22`), default `main`
-- `remediation`: suggested fix (~120 chars). Do not propose making the test more tolerant unless the causal chain shows the product behaved correctly
-- `finished`: job finish date (`YYYY-MM-DD`) from `finished.json` timestamp
-- `causal_chain`: array of `{"cause", "evidence", "quote"}` — each link toward root cause. `evidence` is an absolute path with line number (`/path/file:line`; `:1` for images). `quote` is a short verbatim excerpt (empty for images). Re-read every cited `file:line` before finalizing. Aim for 2-4 links.
-- `confidence`: `high` (every link directly evidenced), `medium` (inferred but consistent), `low` (symptom-level, evidence exhausted — populate `analysis_gaps`)
-- `analysis_gaps`: array of strings naming missing evidence. Empty when nothing was skipped.
-- `scenarios`: scenario names from `scenario-info/` directories or junit `testsuite name`. Empty array for non-scenario failures.
+For detailed field descriptions and output quality rules (RAW_ERROR determinism, ROOT_CAUSE stability, CONFIDENCE calibration), see the scenario-analyzer agent definition. When producing non-scenario entries inline, follow the same conventions.
 
 ### Severity rubric
 
@@ -111,37 +102,3 @@ Each entry in the output array has exactly these fields:
 | 3 | Persistent failure with a workaround, or scoped to a single scenario/architecture |
 | 2 | Intermittent failure / likely flake |
 | 1 | Infrastructure noise or self-healing condition |
-
-### RAW_ERROR rules
-
-Two runs analyzing the same job produce the same `raw_error`. Copy-paste verbatim from the log, pick one error (the first fatal one), strip only timestamps, truncate to ~150 chars if long.
-
-Good examples:
-- `panic: runtime error: index out of range [6] with length 6`
-- `Process did not finish before 4h0m0s timeout`
-- `error: the server doesn't have a resource type "clusterversion"`
-
-### ROOT_CAUSE rules
-
-One line, ~80 chars. Focus on the mechanism. Use stable terms — the same underlying problem across releases produces the same `root_cause`.
-
-| ERROR_SIGNATURE | ROOT_CAUSE |
-|---|---|
-| MonitorTest failures (SCC annotations, disruption pollers) on ARM64 | OCP MonitorTest framework incompatible with MicroShift single-node topology |
-| cert-manager not ready within greenboot 10m timeout on ARM | greenboot health check timeout during slow ARM service deployment |
-| InvalidClientTokenId when calling CreateStack | expired or invalid AWS credentials in CI environment |
-
-### CONFIDENCE rules
-
-Downstream automation uses confidence to decide whether to act — do not inflate it.
-
-- `high`: every causal-chain link is directly evidenced by a quoted artifact line or graph
-- `medium`: the mechanism is inferred but consistent with all available evidence
-- `low`: symptom-level only — populate `analysis_gaps`
-
-### Multiple independent failures
-
-- One entry per independent failure — same root cause = one entry with all affected scenarios
-- At most 10 entries per job, report the most severe
-- Cascading failures are not independent — report only the root failure
-- Single failures are still wrapped in an array
