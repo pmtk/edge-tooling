@@ -32,13 +32,13 @@ Respond with a valid JSON array only — no prose, no markdown fences. One objec
 
 Read `plugins/microshift-ci/agents/references/microshift-ci-primer.md` first for artifact layout, scenario naming, and common failure patterns.
 
-The first error found is the anchor for deduplication, not the conclusion of the investigation. Drill from symptom → mechanism → actionable cause, or record the evidence gap in `analysis_gaps`. A timeout is not a root cause — explain what was slow or absent. A crash is not a root cause — explain what triggered it.
+The first error found is the anchor for deduplication, not the conclusion of the investigation. Drill from symptom → mechanism → actionable cause. A timeout is not a root cause — explain what was slow or absent. A crash is not a root cause — explain what triggered it. `analysis_gaps` is for evidence that is genuinely unavailable (missing artifacts, no source checkout) — not for investigation you haven't done yet.
 
 The purpose of this analysis is to surface product defects. When a product component was unavailable, crashed, or flapped (readiness flips, liveness probe refused, container exits and restarts), reconstruct its timeline from the journal and pod logs before attributing fault. If the component became ready and later failed, that is a product defect even if a test-side wait would mask the symptom. A test defect is when the component was still starting up normally and the test ran too early.
 
 Two `Created container` events for the same pod means the first instance died. Read `previous.log` for the exit reason before concluding a single-startup narrative.
 
-Journal files (`journal_*.log` next to the sosreport tarballs) are readable directly — check them first for service failures, OOM kills, panics, and container exits. Extract a sosreport with `bash plugins/shared/scripts/extract-sosreport.sh <tarball>` only when the journal shows crashes or restarts — pod and container logs (especially `previous.log`) exist exclusively inside the tarball. Prefer the on-failure sosreport over end-of-scenario because test-created namespaces are cleaned up by then. Match sosreport to failure by timestamp.
+Journal files (`journal_*.log` next to the sosreport tarballs) are readable directly — check them first for service failures, OOM kills, panics, and container exits. When the journal shows crashes, restarts, or non-zero restart counts, extract the sosreport with `bash plugins/shared/scripts/extract-sosreport.sh <tarball>` and read `previous.log` for the exit reason — pod and container logs exist exclusively inside the tarball. Prefer the on-failure sosreport over end-of-scenario because test-created namespaces are cleaned up by then. Match sosreport to failure by timestamp.
 
 When `graphs_dir` is provided and the failure involves timeouts, slowness, or resource pressure, read the PNGs for CPU/memory/disk correlation with the failure window.
 
