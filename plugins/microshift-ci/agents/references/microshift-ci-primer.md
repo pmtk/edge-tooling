@@ -145,6 +145,8 @@ Per scenario, under
 
 | File | Answers |
 | ---- | ------- |
+| `<ARTIFACTS_DIR>/build-log.txt` | Prow job output — AWS infra and hypervisor errors surface here. The step diagram URL at the end links to the step execution graph |
+| `<STEP>/build-log.txt` | Per-step log — each CI step has its own `build-log.txt` |
 | `junit.xml` | Which tests failed; the top-level `testsuite name` IS the scenario name |
 | `rf-debug.log` | Robot Framework execution trace with timestamps — failures marked `\| FAIL \|`; the primary test-failure evidence |
 | `boot_and_run.log` | VM boot + scenario orchestration; timeouts killing the whole scenario show up here (`timeout: sending signal TERM`) |
@@ -174,9 +176,6 @@ Per scenario, under
   This extracts pod logs, inspect outputs, and cluster-scoped
   resources (not journals or the full filesystem) into
   `<tarball-parent>/sos-extracted/<sosreport-name>/`.
-- The on-failure listener respects the `SKIP_SOS` environment variable —
-  when `true`, no on-failure reports are generated (development
-  environments only; CI always collects them).
 - Inside an extracted report:
   - Per-namespace pod logs:
     `sos_commands/microshift/namespaces/<ns>/pods/<pod>/<container>/<container>/logs/current.log`
@@ -204,7 +203,7 @@ ready. The final verdict is
 
 ## Reading the journal for component failures
 
-Reconstruct a timestamped component timeline before attributing fault:
+A timestamped component timeline from these events supports fault attribution:
 
 - Pod lifecycle: kubelet `SyncLoop (PLEG)` events, `Created container` /
   `Started container` (crio), `SyncLoop (probe)` readiness transitions,
