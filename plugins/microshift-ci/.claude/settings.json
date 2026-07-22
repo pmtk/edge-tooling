@@ -11,6 +11,17 @@
             "statusMessage": "Validating RCA output schema..."
           }
         ]
+      },
+      {
+        "matcher": "scenario-analyzer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PLUGIN_ROOT/scripts/validate-rca-output.py\"",
+            "timeout": 30,
+            "statusMessage": "Validating scenario RCA output..."
+          }
+        ]
       }
     ]
   }
