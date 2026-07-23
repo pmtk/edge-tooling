@@ -34,6 +34,14 @@ url_to_gcs() {
 # gsutil cp -r gs://bucket/.../BUILD_ID/ dest/ creates dest/BUILD_ID/...
 # so the final layout is: ${WORKDIR}/artifacts/${BUILD_ID}/finished.json etc.
 # Uses gsutil anonymous access since the bucket is public.
+# Overrides gcloud/boto credentials to prevent authenticated access failures.
+: "${_ANON_GCLOUD_CONFIG:=$(mktemp -d)}"
+export _ANON_GCLOUD_CONFIG
+
+_gsutil_anon() {
+    CLOUDSDK_AUTH_ACCESS_TOKEN=no CLOUDSDK_CONFIG="${_ANON_GCLOUD_CONFIG}" BOTO_CONFIG=/dev/null gsutil "$@"
+}
+
 download_job() {
     local build_id="$1"
     local url="$2"
@@ -53,7 +61,7 @@ download_job() {
     mkdir -p "${parent}"
     local dl_err
     dl_err=$(mktemp)
-    if gsutil -q -m cp -r "${gcs_path}/" "${parent}/" 2>"${dl_err}"; then
+    if _gsutil_anon -q -m cp -r "${gcs_path}/" "${parent}/" 2>"${dl_err}"; then
         echo "  downloaded: ${build_id}" >&2
         rm -f "${dl_err}"
         return 0
@@ -149,7 +157,7 @@ main() {
 
     # Export functions and vars for subshells
     export WORKDIR
-    export -f download_job url_to_gcs
+    export -f download_job url_to_gcs _gsutil_anon
 
     # Download all jobs in parallel
     local status_file
