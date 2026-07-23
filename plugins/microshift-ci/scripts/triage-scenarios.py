@@ -52,11 +52,7 @@ def find_scenario_info(artifacts_dir: str):
     return None
 
 
-def scenario_failed(scenario_dir: str) -> bool:
-    junit_path = os.path.join(scenario_dir, "junit.xml")
-    if not os.path.isfile(junit_path):
-        return True
-
+def junit_has_failures(junit_path: str) -> bool:
     try:
         tree = ElementTree.parse(junit_path)
         root = tree.getroot()
@@ -67,8 +63,32 @@ def scenario_failed(scenario_dir: str) -> bool:
                 return True
     except (ElementTree.ParseError, ValueError):
         return True
-
     return False
+
+
+def scenario_failed(scenario_dir: str) -> bool:
+    top_junit = os.path.join(scenario_dir, "junit.xml")
+    if os.path.isfile(top_junit):
+        return junit_has_failures(top_junit)
+
+    phase_junit = os.path.join(scenario_dir, "phase_create-and-run", "junit.xml")
+    if os.path.isfile(phase_junit):
+        return junit_has_failures(phase_junit)
+
+    return True
+
+
+def resolve_artifacts_dir(job: dict, workdir: str) -> str:
+    """Resolve the artifacts directory, rebasing to workdir if the recorded path is stale."""
+    artifacts_dir = job.get("artifacts_dir", "")
+    if artifacts_dir and os.path.isdir(artifacts_dir):
+        return artifacts_dir
+    build_id = job.get("build_id", "")
+    if build_id:
+        rebased = os.path.join(workdir, "artifacts", build_id)
+        if os.path.isdir(rebased):
+            return rebased
+    return ""
 
 
 def triage(jobs_file: str) -> dict:
@@ -78,6 +98,8 @@ def triage(jobs_file: str) -> dict:
     if not isinstance(jobs, list):
         return {"scenario_jobs": [], "direct_test_jobs": []}
 
+    workdir = os.path.dirname(os.path.dirname(os.path.abspath(jobs_file)))
+
     scenario_jobs = []
     direct_test_jobs = []
 
@@ -86,8 +108,8 @@ def triage(jobs_file: str) -> dict:
         if status != "FAILURE":
             continue
 
-        artifacts_dir = job.get("artifacts_dir", "")
-        if not artifacts_dir or not os.path.isdir(artifacts_dir):
+        artifacts_dir = resolve_artifacts_dir(job, workdir)
+        if not artifacts_dir:
             continue
 
         result = find_scenario_info(artifacts_dir)
