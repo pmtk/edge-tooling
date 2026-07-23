@@ -849,7 +849,29 @@ def main():
     print(f"Parsed {len(jobs)} jobs ({skipped} skipped)", file=sys.stderr)
 
     # Group and build candidates
-    groups = group_by_signature(jobs)
+    groups_path = os.path.join(workdir, "jobs", f"release-{source}-groups.json")
+    precomputed = None
+    if os.path.isfile(groups_path):
+        try:
+            with open(groups_path) as gf:
+                raw = json.load(gf)
+            if isinstance(raw, list) and all(isinstance(g, list) for g in raw):
+                precomputed = raw
+                print(f"Using pre-computed groups from {os.path.basename(groups_path)}", file=sys.stderr)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if precomputed is not None:
+        groups = []
+        for idx_list in precomputed:
+            group = [jobs[i] for i in idx_list if 0 <= i < len(jobs)]
+            if group:
+                groups.append(group)
+        ungrouped = set(range(len(jobs))) - {i for g in precomputed for i in g}
+        for i in sorted(ungrouped):
+            groups.append([jobs[i]])
+    else:
+        groups = group_by_signature(jobs)
     candidates = build_candidates(groups)
 
     print(f"Deduplicated to {len(candidates)} bug candidates", file=sys.stderr)

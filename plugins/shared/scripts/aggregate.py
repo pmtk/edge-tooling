@@ -40,9 +40,9 @@ def classify_severity(group):
 # JSON generation
 # ---------------------------------------------------------------------------
 
-def build_release_json(release, jobs, timestamp):
+def build_release_json(release, jobs, timestamp, precomputed_groups=None):
     """Build the release summary as a dict (ready for json.dump)."""
-    issues, breakdown = _build_issues_from_jobs(jobs)
+    issues, breakdown = _build_issues_from_jobs(jobs, precomputed_groups)
 
     return {
         "release": release,
@@ -53,12 +53,24 @@ def build_release_json(release, jobs, timestamp):
     }
 
 
-def _build_issues_from_jobs(jobs):
+def _build_issues_from_jobs(jobs, precomputed_groups=None):
     """Group jobs by error signature and return (issues list, breakdown dict).
 
-    Shared by both release and PR builders.
+    Shared by both release and PR builders.  When *precomputed_groups* is
+    provided (list of lists of indices into *jobs*), those groups are used
+    instead of the token-similarity algorithm.
     """
-    groups = group_by_signature(jobs)
+    if precomputed_groups is not None:
+        groups = []
+        for idx_list in precomputed_groups:
+            group = [jobs[i] for i in idx_list if 0 <= i < len(jobs)]
+            if group:
+                groups.append(group)
+        ungrouped = set(range(len(jobs))) - {i for g in precomputed_groups for i in g}
+        for i in sorted(ungrouped):
+            groups.append([jobs[i]])
+    else:
+        groups = group_by_signature(jobs)
     groups.sort(key=lambda g: (-max(j["severity"] for j in g), -len(g), g[0].get("error_signature", "")))
 
     breakdown = {"build": 0, "test": 0, "infrastructure": 0}
@@ -135,6 +147,21 @@ def build_pr_json(pr_jobs, timestamp):
 # ---------------------------------------------------------------------------
 # File discovery
 # ---------------------------------------------------------------------------
+
+def load_groups_file(path):
+    """Load a pre-computed groups JSON file (array of arrays of indices)."""
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as f:
+            groups = json.load(f)
+        if isinstance(groups, list) and all(isinstance(g, list) for g in groups):
+            return groups
+    except (json.JSONDecodeError, OSError):
+        pass
+    print(f"  WARNING: ignoring malformed groups file {path}", file=sys.stderr)
+    return None
+
 
 def find_release_job_files(workdir, release):
     pattern = os.path.join(workdir, "jobs", f"release-{release}-job-*.json")
@@ -223,7 +250,12 @@ def main():
             print("No valid job reports found", file=sys.stderr)
             sys.exit(1)
 
-        result = build_release_json(release, jobs, timestamp)
+        groups_path = os.path.join(workdir, "jobs", f"release-{release}-groups.json")
+        precomputed = load_groups_file(groups_path)
+        if precomputed is not None:
+            print(f"Using pre-computed groups from {os.path.basename(groups_path)}", file=sys.stderr)
+
+        result = build_release_json(release, jobs, timestamp, precomputed)
         jobs_dir = os.path.join(workdir, "jobs")
         os.makedirs(jobs_dir, exist_ok=True)
         output_path = os.path.join(jobs_dir, f"release-{release}-summary.json")

@@ -87,71 +87,115 @@ Compute once at the start by running `date +%y%m%d` and substituting into the pa
 
 ### Step 2: Triage and Analyze Failing Scenarios
 
-**Goal**: Identify failing scenarios across all jobs, then spawn per-scenario analysis agents for maximum detail.
+**Goal**: Spawn one `microshift-ci:scenario-analyzer` agent per failing scenario across all jobs. Do NOT use `microshift-ci:prow-job-analyzer` for scenario-based jobs — each scenario gets its own dedicated agent for maximum analysis depth.
 
-#### Step 2a: Triage
+#### Step 2a: Run Triage Script
 
-1. For each jobs JSON file (`release-<VERSION>-jobs.json`, `prs-jobs.json`), run:
+Run the triage script for each jobs JSON file. This is mandatory — it determines which agents to spawn.
 
-   ```text
-   python3 plugins/microshift-ci/scripts/triage-scenarios.py <WORKDIR>/jobs/<JOBS_FILE>
-   ```
+```text
+python3 plugins/microshift-ci/scripts/triage-scenarios.py <WORKDIR>/jobs/release-<VERSION>-jobs.json
+python3 plugins/microshift-ci/scripts/triage-scenarios.py <WORKDIR>/jobs/prs-jobs.json
+```
 
-   The script classifies each failed job as `scenario_jobs` (has `scenario-info/` artifacts) or `direct_test_jobs` (no scenarios). For scenario jobs, it lists each failing scenario with its artifact directory.
+The script outputs JSON with two arrays:
 
-2. For each release that has a source checkout at `<WORKDIR>/src/microshift-release-<RELEASE>`, run `repo-log.sh` once:
+- `scenario_jobs[]` — jobs that have `scenario-info/` artifacts. Each entry lists its `failing_scenarios[]` with `name` and `dir` fields. These get `microshift-ci:scenario-analyzer` agents (one per scenario, NOT one per job).
+- `direct_test_jobs[]` — jobs without scenario-info (e.g. footprint, OCP conformance). These get `microshift-ci:prow-job-analyzer` agents.
 
-   ```text
-   bash plugins/microshift-ci/scripts/repo-log.sh <SOURCE_DIR> --since <1_MONTH_BEFORE_FINISHED> --until <FINISHED_DATE> --paths test/
-   ```
+Read the triage output before proceeding. If a release has zero failing scenarios and zero direct-test jobs, skip it.
 
-   Store the output — it will be passed to every scenario-analyzer for that release.
+#### Step 2b: Run repo-log.sh (Once Per Release)
 
-#### Step 2b: Launch All Agents
+For each release that has a source checkout at `<WORKDIR>/src/microshift-release-<RELEASE>`, run:
 
-Launch **ALL** agents in a **single message** as **foreground** agents (do NOT use `run_in_background`). Mix scenario-analyzers and prow-job-analyzers in the same message — they run concurrently.
+```text
+bash plugins/microshift-ci/scripts/repo-log.sh <SOURCE_DIR> --since <1_MONTH_BEFORE_FINISHED> --until <FINISHED_DATE> --paths test/
+```
 
-**For each failing scenario** (from `scenario_jobs[].failing_scenarios[]`):
+Store the output — it gets passed to every scenario-analyzer for that release.
+
+#### Step 2c: Launch All Agents
+
+Launch **ALL** agents in a **single message** as **foreground** agents (do NOT use `run_in_background`). They run concurrently.
+
+**Scenario-analyzers** — one per entry in `scenario_jobs[].failing_scenarios[]`:
 
 ```text
 Agent: subagent_type=microshift-ci:scenario-analyzer, prompt="Analyze this CI test scenario:
-scenario_dir: <SCENARIO_DIR>
-scenario_name: <SCENARIO_NAME>
-job_url: <JOB_URL>
-job_name: <JOB_NAME>
-release: <RELEASE>
-finished: <FINISHED_DATE>
-graphs_dir: <WORKDIR>/graphs/<BUILD_ID>
+scenario_dir: <FAILING_SCENARIO.DIR>
+scenario_name: <FAILING_SCENARIO.NAME>
+job_url: <SCENARIO_JOB.URL>
+job_name: <SCENARIO_JOB.JOB>
+release: <SCENARIO_JOB.RELEASE>
+finished: <SCENARIO_JOB.FINISHED>
+graphs_dir: <WORKDIR>/graphs/<SCENARIO_JOB.BUILD_ID>
 source_dir: <WORKDIR>/src/microshift-release-<RELEASE>
 recent_commits: <REPO_LOG_OUTPUT>"
 ```
 
 Only include `graphs_dir`, `source_dir`, and `recent_commits` lines when those exist.
 
-**For each direct-test job** (from `direct_test_jobs[]`):
+**Prow-job-analyzers** — one per entry in `direct_test_jobs[]` only:
 
 ```text
 Agent: subagent_type=microshift-ci:prow-job-analyzer, prompt="Analyze this prow job:
-artifacts_dir: <ARTIFACTS_DIR>
-graphs_dir: <WORKDIR>/graphs/<BUILD_ID>
+artifacts_dir: <DIRECT_TEST_JOB.ARTIFACTS_DIR>
+graphs_dir: <WORKDIR>/graphs/<DIRECT_TEST_JOB.BUILD_ID>
 source_dir: <WORKDIR>/src/microshift-release-<RELEASE>
-job_url: <JOB_URL>
-job_name: <JOB_NAME>"
+job_url: <DIRECT_TEST_JOB.URL>
+job_name: <DIRECT_TEST_JOB.JOB>"
 ```
 
 Say "Analyzing N scenarios + M direct-test jobs in parallel..." in your message text.
 
-#### Step 2c: Collect and Write Per-Job Files
+#### Step 2d: Collect and Write Per-Job Files
 
 After all agents complete:
 
-1. **Scenario-analyzer results**: Group by job (match each scenario back to its parent job from the triage output). For each job, concatenate all its scenario entries into a single JSON array and write to:
+1. **Scenario-analyzer results**: each agent returns a JSON array for one scenario. Group results by their parent job (match `job_name` from the agent prompt back to the triage output). For each job, concatenate all its scenario entries into a single JSON array and write to:
    - Release jobs: `<WORKDIR>/jobs/release-<RELEASE>-job-<N>-<BUILD_ID>.json`
    - PR jobs: `<WORKDIR>/jobs/prs-job-<N>-pr<PR>-<JOB_NAME_SUFFIX>.json`
 
-2. **Direct-test job results**: Write each agent's JSON response directly to the corresponding file (same naming as above).
+2. **Direct-test job results**: write each prow-job-analyzer's JSON response directly to the corresponding file (same naming).
 
-Immediately proceed to Step 3 in the same turn. Do NOT stop between Steps 2 and 3.
+Immediately proceed to Step 2e in the same turn.
+
+### Step 2e: Group Failures by Root Cause (LLM)
+
+**Goal**: Semantically group failure entries so that the same underlying issue is reported as one issue in the HTML report, even when error messages differ textually.
+
+**Actions**:
+
+For each release that has per-job JSON files:
+
+1. Read all `<WORKDIR>/jobs/release-<RELEASE>-job-*.json` files in sorted order. Parse each file and collect all entries into a flat list. Record the index of each entry (0-based, matching the order aggregate.py will see them).
+
+2. Build a compact listing for the LLM:
+   ```
+   0: error_signature="..." | root_cause="..." | raw_error="..." | step_name="..."
+   1: error_signature="..." | root_cause="..." | raw_error="..." | step_name="..."
+   ...
+   ```
+
+3. Spawn a single Agent (model: haiku) with this prompt:
+
+   ```
+   Group these CI failure entries by root cause. Entries caused by the same
+   underlying issue belong in the same group, even if the error messages
+   differ textually. Return ONLY a JSON array of arrays of entry indices.
+
+   Entries:
+   <the compact listing from step 2>
+
+   Example output for 6 entries with 3 root causes: [[0,3],[1,2],[4,5]]
+   ```
+
+4. Parse the agent's response as JSON. Write the result to `<WORKDIR>/jobs/release-<RELEASE>-groups.json`.
+
+5. If the agent fails or returns invalid JSON, skip the groups file — aggregate.py will fall back to token-based grouping automatically.
+
+Immediately proceed to Step 3 in the same turn. Do NOT stop between Steps 2e and 3.
 
 ### Step 3: Run Bug Correlation (Dry-Run)
 
