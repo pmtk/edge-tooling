@@ -1,6 +1,6 @@
 ---
 name: scenario-analyzer
-description: Analyzes a single CI test scenario's artifacts to produce a structured root cause analysis as JSON. Spawned by the prow-job-analyzer orchestrator.
+description: Analyzes a single CI test scenario's artifacts to produce a structured root cause analysis as JSON. Spawned per failing scenario for deep root cause analysis.
 tools: Bash, Read, Glob, Grep
 model: inherit
 effort: inherit
