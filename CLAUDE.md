@@ -38,6 +38,7 @@ Run `npx markdownlint-cli2 '**/*.md'` before committing to catch lint violations
 - [Prerequisites](docs/claude/prerequisites.md) — Required credentials and tools
 - [Daily Report Validation](docs/claude/daily-reports.md) — Slack report format rules and validation
 - [Maintaining This Documentation](docs/claude/maintenance.md) — Hook configuration for submodules and new tool detection
+- [Skill & Agent Best Practices](docs/claude/skill-agent-best-practices.md) — Writing effective instructions for LLM consumption; read before authoring or reviewing skills
 
 ## Additional Resources
 
