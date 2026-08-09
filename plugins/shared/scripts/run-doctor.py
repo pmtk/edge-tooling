@@ -334,6 +334,10 @@ class DoctorPipeline:
                 parts.append(f"{perm_denials} PERMISSION DENIALS")
             if stats.get("context_exhausted"):
                 parts.append("CONTEXT EXHAUSTED")
+            compactions = stats.get("num_compactions", 0)
+            if compactions > 0:
+                compact_secs = stats.get("compaction_duration_ms", 0) / 1000
+                parts.append(f"{compactions} COMPACTION{'S' if compactions > 1 else ''} ({compact_secs:.0f}s)")
             if not r["success"] and not timed_out and not hit_max_turns and hooks == 0:
                 parts.append("stop hook did not run")
             elif hooks > 1:
@@ -783,6 +787,8 @@ def _extract_job_stats(log_path):
     parent_user_msgs = 0
     first_hook_at_turn = 0
     context_exhausted = False
+    num_compactions = 0
+    compaction_duration_ms = 0
     try:
         with open(log_path, errors="replace") as f:
             for line in f:
@@ -809,6 +815,11 @@ def _extract_job_stats(log_path):
                             if isinstance(block, dict) and block.get("type") == "text":
                                 if block.get("text", "").strip() == "Prompt is too long":
                                     context_exhausted = True
+                elif (record.get("type") == "system"
+                      and record.get("subtype") == "compact_boundary"):
+                    num_compactions += 1
+                    meta = record.get("compact_metadata", {})
+                    compaction_duration_ms += meta.get("duration_ms", 0)
                 elif record.get("type") == "user" and not record.get("parent_tool_use_id"):
                     is_hook = False
                     if record.get("isSynthetic"):
@@ -831,7 +842,9 @@ def _extract_job_stats(log_path):
             "stop_hook_count": stop_hook_count,
             "num_turns": num_turns, "permission_denials": permission_denials,
             "first_hook_at_turn": first_hook_at_turn,
-            "context_exhausted": context_exhausted}
+            "context_exhausted": context_exhausted,
+            "num_compactions": num_compactions,
+            "compaction_duration_ms": compaction_duration_ms}
 
 
 def _run_claude_session(prompt, system_prompt, plugin_dir, model, log_path,
