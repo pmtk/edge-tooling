@@ -125,3 +125,20 @@ The user argument is: `<ARGUMENTS>`
    If `TMP` is inside a `<WORKDIR>` structure, also save the raw JSON to:
    `<WORKDIR>/jobs/release-<RELEASE>-job-<JOB_ID>.json`
    (derive RELEASE and JOB_ID from the artifacts path and the JSON content).
+
+4. **Consult previous Doctor reports after saving the independent RCA**:
+   - Keep the artifact-grounded RCA unchanged; an old report is a hypothesis, not evidence for this execution.
+   - Use a workdir containing only this investigation's job JSON when investigating a single job.
+   - Derive `<FINISHED_UTC>` from this job's `finished.json` Unix timestamp, formatted as ISO 8601 UTC.
+   - Run the shared history workflow with a two-week lookback:
+
+     ```bash
+     python3 plugins/microshift-ci/scripts/doctor_history.py \
+       --component microshift --workdir <WORKDIR> --releases <RELEASE> \
+       --days 14 --as-of <FINISHED_UTC>
+     ```
+
+   - Live semantic comparison is CI-only; local runs can reuse cached decisions. Use `--fetch-only` for explicitly model-free acquisition and leave semantic pilots to CI.
+   - Read `<WORKDIR>/history/results.json`. Present a compact match list: score, age, distinct execution count, affected releases, and source link. Search historical causes across releases; `<RELEASE>` selects the current investigation, not a historical version boundary.
+   - Report the observed pattern and a short partial-history notice when needed. Keep per-job timelines, comparison/debug details, and methodology out of the user-facing summary; retain them in JSON.
+   - Say **first observed**, not **introduced**. Preserve uncertain-match labels; keep detailed coverage/budget gaps in JSON. Do not infer harmlessness from intermittency.

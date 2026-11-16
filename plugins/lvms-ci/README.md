@@ -5,12 +5,36 @@ Claude Code plugin for LVMS (Logical Volume Manager Storage) CI triage and autom
 ## CI Doctor Pipeline
 
 The full CI doctor pipeline is driven by `run-doctor.py`, which runs the
-`prepare → analyze → bugs → finalize` stages for the `lvm-operator` component:
+`prepare → analyze → bugs → history → finalize` stages for the `lvm-operator` component:
 
 ```bash
 python3 plugins/lvms-ci/scripts/run-doctor.py \
     --releases main --workdir /tmp/workdir
 ```
+
+### Two-week failure history
+
+The shared `history` stage compares current causal chains with earlier public
+Doctor exports across all releases, then shows a compact HTML match list with
+semantic scores, age, distinct execution counts, releases, and source links.
+Timelines and diagnostic details remain in `history/results.json`. The report
+also publishes `report-lvm-operator-ci-doctor.json`. “First observed” is not an
+introduction date; intermittency does not establish a harmless flake.
+
+Defaults: `--history-days 14`, `--history-max-budget-usd 2.0`; use
+`--history-as-of <ISO_UTC>` for replay or `--no-history` to disable comparison.
+Live semantic comparison is CI-only; acquisition checks can use:
+
+```bash
+python3 plugins/lvms-ci/scripts/doctor_history.py \
+    --component lvm-operator --workdir /tmp/workdir --releases main \
+    --days 14 --fetch-only
+```
+
+Saved `history/results.json` is reused by HTML refresh without new model calls.
+See the [shared history behavior and CI testing instructions](../microshift-ci/README.md#two-week-failure-history)
+for matching, cache, budget, and coverage details. A CI rehearsal must use an
+image containing these changes, not the unchanged published helper image.
 
 ### Bug correlation
 

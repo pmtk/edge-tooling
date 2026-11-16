@@ -37,6 +37,7 @@ Downloads CI Doctor analysis artifacts (per-job reports, summaries, bug mappings
    - Downloads analysis files into subdirectories preserving the source structure:
      - `<WORKDIR>/jobs/` — job analysis files (`release-*`, `prs-*`)
      - `<WORKDIR>/bugs/` — bug correlation files (`bug-candidates-*`, `bug-matches-*`, `bug-results-*`, plus `bug-search-*.txt` for single-release runs)
+     - `<WORKDIR>/history/` — saved historical matches, compact report cache, and replay cutoff
      - `<WORKDIR>/` — final reports (HTML report, claude logs, plus `report-bug-search.txt` for multi-release runs)
    - Outputs a JSON summary to stdout
 
@@ -45,6 +46,8 @@ Downloads CI Doctor analysis artifacts (per-job reports, summaries, bug mappings
    - `releases` — array of releases with job report counts, summary/bugs availability
    - `prs` — PR job report info (or null)
    - `html_report` — path to the HTML report (or null)
+   - `json_report` — unfiltered machine-readable report export (or null for older runs)
+   - `history_report` — saved historical comparison results (or null for older runs)
    - `files_downloaded` — total file count
 
 3. Present the summary to the user:
@@ -62,6 +65,17 @@ Downloads CI Doctor analysis artifacts (per-job reports, summaries, bug mappings
      ```
 
      where `<RELEASES>` is a comma-separated list of the releases found in the summary.
+
+     This is offline with respect to history: it reuses saved comparisons without new model calls.
+
+   - **Inspect recurrence and onset evidence**: read `<WORKDIR>/history/results.json` when `history_report` is present. Summarize cross-release matches with score, age, distinct execution count, releases, and a source link. Keep per-job timelines and diagnostic details in JSON; use a short partial-history notice when needed and “first observed,” not an introduction date.
+   - **Recompute history only when requested**:
+
+     ```text
+     python3 plugins/microshift-ci/scripts/doctor_history.py --component microshift --workdir <WORKDIR> --releases <RELEASES> --days 14
+     ```
+
+     The downloaded `history/context.json` anchors the lookback to the saved Doctor run. Live semantic comparison is CI-only; use `--fetch-only` for explicitly model-free inspection.
 
    - **Read individual job reports** for deeper investigation:
 

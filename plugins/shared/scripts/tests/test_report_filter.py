@@ -21,20 +21,13 @@ SPEC.loader.exec_module(REPORT)
 
 
 class ReportFilterTests(unittest.TestCase):
-    def test_literal_placeholder_and_existing_causal_chain_model(self):
+    def test_report_export_preserves_causal_chain(self):
         chain = [{"cause": "cause", "evidence": "evidence", "quote": "quote"}]
         issue = {"number": 1, "title": "add", "causal_chain": chain}
         html = REPORT.generate_html(
             "Probe", {"4.20": {"issues": [issue]}}, [], None, None,
             datetime(2026, 10, 19, tzinfo=timezone.utc),
         )
-        self.assertIn('placeholder="Filter… (regex: title, root cause, causal chain, job name)"', html)
-        self.assertNotIn(r"\u2026", html)
-        self.assertNotIn('id="filter-regex"', html)
-        self.assertNotIn('Regex mode', html)
-        self.assertNotIn('literal matching', html)
-        self.assertIn('aria-describedby="report-filter-error" aria-invalid="false"', html)
-        self.assertIn('id="report-filter-error" class="filter-error" role="alert"', html)
         payload = html.split("window.REPORT_DATA = ", 1)[1].split(";</script>", 1)[0]
         data = json.loads(payload)
         self.assertEqual(data["releases_data"]["4.20"]["issues"][0]["causal_chain"], chain)

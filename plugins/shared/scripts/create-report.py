@@ -16,6 +16,8 @@ import os
 import re
 import glob as glob_mod
 from datetime import datetime, timezone
+from urllib.parse import quote
+from doctor_history import issue_key
 from filter_images import tag_matches_release
 
 
@@ -160,6 +162,11 @@ CSS = """\
         .causal-chain .evidence { color: #6c757d; font-family: monospace; font-size: 0.9em; }
         .causal-chain code { background: #f8f9fa; padding: 1px 4px; border-radius: 3px; font-size: 0.85em; }
         .analysis-gaps { color: #6c757d; font-style: italic; font-size: 0.85em; margin: 4px 0; }
+        .issue-history { margin: 10px 0; padding: 8px 12px; background: #f5f8fc; border-left: 3px solid #64748b; font-size: 0.9em; }
+        .history-summary { margin: 0; }
+        .history-coverage { margin: 10px 0; color: #59636e; font-size: 0.85em; }
+        .history-matches { margin: 5px 0 0; padding-left: 20px; }
+        .history-match { margin: 3px 0; }
         .scenario-chip { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.78em; background: #e9ecef; color: #495057; margin: 0 3px 2px 0; font-family: monospace; }
         .graph-source { font-size: 0.8em; color: #6c757d; font-style: italic; margin-bottom: 4px; }
         .graph-toggle { cursor: pointer; text-decoration: none; font-size: 1em; margin-left: 4px; }
@@ -579,6 +586,131 @@ function renderInvestigation(parent, issue) {
     if (gaps.length) parent.appendChild(h('div', 'analysis-gaps', 'Evidence gaps: ' + gaps.join(', ')));
 }
 
+// === Historical observations (data only; never evidence for the current RCA) ===
+function historyList(value) { return Array.isArray(value) ? value : []; }
+function historyCount(value) {
+    return Number.isInteger(value) && value >= 0 ? String(value) : 'unknown';
+}
+function historyDateValue(value) {
+    if (typeof value !== 'string') return null;
+    if (/^\\d{4}-\\d{2}-\\d{2}$/.test(value)) {
+        var date = new Date(value + 'T00:00:00Z');
+        return Number.isFinite(date.getTime()) && date.toISOString().substring(0, 10) === value ? date.getTime() : null;
+    }
+    var iso = value.indexOf('T') !== -1 ? finishedISO(value) : '';
+    return iso ? Date.parse(iso) : null;
+}
+function historyDate(value) {
+    var time = historyDateValue(value);
+    if (time === null) return 'unknown date';
+    var anchor = D.history && historyDateValue(D.history.as_of);
+    if (anchor == null) return value;
+    var delta = value.length === 10 ?
+        Math.floor(anchor / 86400000) - Math.floor(time / 86400000) : (anchor - time) / 86400000;
+    if (delta < 0) return 'outside history window';
+    if (value.length === 10 && delta === 0) return 'today';
+    if (delta >= 1) return Math.floor(delta) + 'd ago';
+    if (delta * 24 >= 1) return Math.floor(delta * 24) + 'h ago';
+    return Math.floor(delta * 1440) + 'm ago';
+}
+function historyLink(url, label) {
+    // Historical reports and model explanations are untrusted. Only absolute
+    // HTTP(S) URLs may become links; invalid URLs remain inert text.
+    if (typeof url === 'string' && /^https?:\\/\\//i.test(url) && !/[\\u0000-\\u0020\\u007f]/.test(url)) {
+        try {
+            var parsed = new URL(url);
+            if (parsed.hostname && !parsed.username && !parsed.password) {
+                var link = makeLink(parsed.href, String(label), '', '_blank');
+                link.rel = 'noopener noreferrer';
+                return link;
+            }
+        } catch (error) {}
+    }
+    return h('span', '', String(label));
+}
+function historyGlobalStatus() {
+    var history = D.history || {}, coverage = history.coverage || {};
+    if (history.status === 'unavailable') return 'unavailable';
+    return coverage.complete === true && !historyList(coverage.gaps).length &&
+        !historyList(history.gaps).length && history.status !== 'incomplete' &&
+        !(Number.isInteger(coverage.reports_found) && Number.isInteger(coverage.reports_loaded) &&
+        coverage.reports_loaded < coverage.reports_found) ? 'complete' : 'incomplete';
+}
+function historyShortText(value, limit) {
+    var text = String(value || '').replace(/\\s+/g, ' ').trim();
+    return text.length > limit ? text.substring(0, limit - 1) + '\\u2026' : text;
+}
+function historyReleaseLabels(match) {
+    var releases = [], prs = [];
+    historyList(match.scopes).forEach(function(scope) {
+        if (typeof scope !== 'string') return;
+        var release = /^release:(main|\\d+\\.\\d+(?:\\.\\d+)?)$/.exec(scope);
+        var pr = /^pr:(\\d+)$/.exec(scope);
+        if (release && releases.indexOf(release[1]) === -1) releases.push(release[1]);
+        if (pr && prs.indexOf(pr[1]) === -1) prs.push(pr[1]);
+    });
+    function numericOrder(a, b) { return a.localeCompare(b, undefined, {numeric: true}); }
+    releases.sort(numericOrder); prs.sort(numericOrder);
+    var labels = [];
+    if (releases.length) labels.push((releases.length === 1 ? 'Release ' : 'Releases ') + releases.join(', '));
+    if (prs.length) labels.push('PR ' + prs.map(function(pr) { return '#' + pr; }).join(', '));
+    return labels.join(' / ') || 'release unknown';
+}
+function renderHistoryCoverage(parent) {
+    if (!parent || !D.history) return;
+    var history = D.history, status = historyGlobalStatus();
+    var label = status === 'complete' ? 'History coverage: complete' :
+        status === 'unavailable' ? 'History unavailable' : 'Partial history';
+    if (Number.isInteger(history.days) && history.days >= 0) label += ' \\u00b7 ' + history.days + 'd lookback';
+    var note = h('p', 'history-coverage', label);
+    note.id = 'history-coverage';
+    parent.appendChild(note);
+}
+function renderIssueHistory(parent, issue) {
+    var history = issue.history;
+    if (!history || typeof history !== 'object') return;
+    var partial = history.status !== 'complete' || historyList(history.gaps).length ||
+        (D.history && historyGlobalStatus() !== 'complete');
+    var panel = h('div', 'issue-history'), summary = [];
+    if (history.first_seen) summary.push('first seen ' + historyDate(history.first_seen));
+    summary.push(historyCount(history.occurrences) + (history.occurrences === 1 ? ' run' : ' runs'));
+    var patterns = ['intermittent evidence', 'persistent in observed runs', 'single observed occurrence', 'insufficient evidence'];
+    summary.push(patterns.indexOf(history.pattern) !== -1 ? history.pattern : 'insufficient evidence');
+    if (partial) summary.push('partial history');
+    if (history.already_present_before_window || history.may_predate_window) summary.push('may predate window');
+    panel.appendChild(h('p', 'history-summary', 'History: ' + summary.join(' \\u00b7 ')));
+    var matches = h('ul', 'history-matches'), seen = new Set();
+    historyList(history.matches).forEach(function(match) {
+        if (!match || typeof match !== 'object' || match.verdict === 'different_cause') return;
+        // Only literal duplicates are collapsed. A shared title or separate
+        // same-cause verdicts do not establish equivalence between candidates.
+        var key = JSON.stringify(match);
+        if (seen.has(key)) return;
+        seen.add(key);
+        var score = typeof match.score === 'number' && Number.isFinite(match.score) && match.score >= 0 && match.score <= 100 ?
+            match.score + '%' : 'score unknown';
+        var text = [score, 'first seen ' + historyDate(match.first_seen),
+            historyCount(match.occurrences) + (match.occurrences === 1 ? ' run' : ' runs'),
+            historyReleaseLabels(match), historyShortText(match.title, 120) || 'Historical match'].join(' \\u00b7 ');
+        if (match.verdict !== 'same_cause') text += ' (possible)';
+        var item = h('li', 'history-match', text);
+        if (match.reason) item.title = historyShortText(match.reason, 240);
+        var source = null;
+        historyList(match.reports).some(function(report) {
+            if (!report || typeof report !== 'object') return false;
+            var link = historyLink(report.url, 'report');
+            if (!link.href) return false;
+            source = link;
+            return true;
+        });
+        item.appendChild(document.createTextNode(' \\u00b7 '));
+        item.appendChild(source || h('span', '', 'report unavailable'));
+        matches.appendChild(item);
+    });
+    if (matches.childNodes.length) panel.appendChild(matches);
+    parent.appendChild(panel);
+}
+
 // === Affected jobs list with PCP charts ===
 function renderAffectedJobs(parent, jobs) {
     if (!jobs || !jobs.length) return;
@@ -684,6 +816,7 @@ function renderIssueTable(parent, issues, anchorPrefix, sourceLabel) {
             dtd.appendChild(rc);
         }
         renderInvestigation(dtd, issue);
+        renderIssueHistory(dtd, issue);
         renderBugLinks(dtd, issue.bug_match, issue, sourceLabel);
         renderAffectedJobs(dtd, issue.affected_jobs);
         if (issue.next_steps) {
@@ -1293,6 +1426,7 @@ var commitSpan = h('span', '', D.commit_version);
 commitSpan.title = D.commit_subject + ' (' + D.commit_date + ')';
 reportTimestamp.appendChild(commitSpan);
 renderDiagnostics(document.getElementById('diagnostics-slot'));
+renderHistoryCoverage(document.getElementById('history-slot'));
 renderOverview(document.getElementById('overview-slot'));
 renderPeriodics(document.getElementById('tab-periodics'));
 renderPRs(document.getElementById('tab-pull-requests'));
@@ -1642,6 +1776,43 @@ def load_json(filepath):
     except (json.JSONDecodeError, IOError) as exc:
         print(f"WARNING: failed to load {filepath}: {exc}", file=sys.stderr)
         return None
+
+
+def load_history(workdir, component):
+    """Read saved history offline; a broken artifact is visible, not no history."""
+    path = os.path.join(workdir, "history", "results.json")
+    if not os.path.exists(path):
+        return None
+    data = load_json(path)
+    if (isinstance(data, dict) and data.get("schema_version") == 1
+            and data.get("component") == component and isinstance(data.get("issues"), dict)):
+        return data
+    return {
+        "schema_version": 1,
+        "component": component,
+        "status": "unavailable",
+        "coverage": {"complete": False, "gaps": [
+            "Saved history results could not be loaded or have an incompatible schema/component."
+        ]},
+        "issues": {},
+    }
+
+
+def attach_history(releases_data, pr_data, history_data):
+    """Join only exact canonical issue keys; never fall back to title matching."""
+    histories = history_data.get("issues", {})
+    groups = [data for data in releases_data.values() if data]
+    if pr_data:
+        groups.extend(pr_data.get("prs", []))
+    for group in groups:
+        for issue in group.get("issues", []):
+            history = histories.get(issue_key(issue))
+            issue["history"] = history if isinstance(history, dict) else {
+                "status": "unavailable",
+                "gaps": ["No saved history assessment for this issue."],
+                "pattern": "insufficient evidence",
+            }
+    return {key: value for key, value in history_data.items() if key != "issues"}
 
 
 def load_bug_candidates(filepath):
@@ -2191,7 +2362,13 @@ def _read_commit_info():
     return info
 
 
-def generate_html(component_title, releases_data, all_bug_candidates, pr_data, pr_status, timestamp, pr_error=None, bugs_tab_data=None, images_tab_data=None, index_data=None, jira_cfg=None, status_data=None, diagnostics_text=None, bug_decisions=None, commit_version="unknown", commit_subject="", commit_date=""):
+def generate_html(component_title, releases_data, all_bug_candidates, pr_data, pr_status, timestamp, pr_error=None, bugs_tab_data=None, images_tab_data=None, index_data=None, jira_cfg=None, status_data=None, diagnostics_text=None, bug_decisions=None, commit_version="unknown", commit_subject="", commit_date="", *, history_data=None, component=None, source_metadata=None, sidecar_path=None):
+    """Render saved data, optionally writing the exact embedded model as JSON.
+
+    Existing positional callers remain valid. ``history_data`` is the saved
+    history/results.json object; ``source_metadata`` describes the Doctor run,
+    not an affected test execution. No history collection or model calls occur.
+    """
     date_str = timestamp.strftime("%Y-%m-%d")
     time_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -2231,7 +2408,13 @@ def generate_html(component_title, releases_data, all_bug_candidates, pr_data, p
                         ajob["metrics"] = _metric_transport(ajob["metrics"])
 
     # --- Build unified data model for client-side rendering ---
+    generated_at = timestamp.replace(tzinfo=timezone.utc) if timestamp.tzinfo is None else timestamp.astimezone(timezone.utc)
+    history_metadata = attach_history(releases_data, pr_data, history_data) if history_data is not None else None
     report_data = {
+        "schema_version": 1,
+        "component": component or next((key for key, title in COMPONENT_TITLES.items() if title == component_title), None),
+        "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
+        "source": source_metadata or {},
         "component_title": component_title,
         "timestamp": time_str,
         "commit_version": commit_version,
@@ -2250,8 +2433,15 @@ def generate_html(component_title, releases_data, all_bug_candidates, pr_data, p
         "diagnostics_text": diagnostics_text,
         "has_chartjs": bool(_CHARTJS_SRC),
     }
+    if history_metadata is not None:
+        report_data["history"] = history_metadata
     report_json_str = json.dumps(report_data, default=str, separators=(",", ":"), allow_nan=False)
-    safe_report_json = report_json_str.replace("</", "<\\/").replace("<!--", "<\\!--")
+    if sidecar_path is not None:
+        with open(sidecar_path, "w", encoding="utf-8") as sidecar:
+            sidecar.write(report_json_str + "\n")
+    # JSON-native escaping preserves exact sidecar parity, including "<!--".
+    # Backslash-escaping "!" is not valid JSON and breaks legacy data readers.
+    safe_report_json = report_json_str.replace("<", "\\u003c")
 
     chartjs_tags = f'<script>{_CHARTJS_SRC}</script><script>{_PCP_CHARTS_SRC}</script>' if _CHARTJS_SRC else ''
 
@@ -2272,6 +2462,7 @@ def generate_html(component_title, releases_data, all_bug_candidates, pr_data, p
     <h1 id="report-title"></h1>
     <p class="timestamp" id="report-timestamp"></p>
     <div id="diagnostics-slot"></div>
+    <div id="history-slot"></div>
     <div id="overview-slot" class="overview-grid"></div>
 
     <div class="tab-bar">
@@ -2530,10 +2721,26 @@ def main():
             if not (dec["action"] == "linked" and dec["jira_key"] in ignore_keys)
         }
 
+    history_data = load_history(workdir, component)
+    source_job = os.environ.get("JOB_NAME")
+    source_build = os.environ.get("BUILD_ID")
+    source_metadata = {
+        "job_name": source_job,
+        "build_id": source_build,
+        "url": ("https://prow.ci.openshift.org/view/gs/test-platform-results/logs/"
+                f"{quote(source_job, safe='')}/{quote(source_build, safe='')}")
+                if source_job and source_build else None,
+    }
+    # Pipeline provenance survives offline refresh/resume without borrowing the
+    # current shell's CI identity or inventing a collection timestamp.
+    saved_source = load_json(os.path.join(workdir, "report-source.json"))
+    if isinstance(saved_source, dict):
+        source_metadata = saved_source
+    sidecar_path = os.path.join(workdir, f"report-{component}-ci-doctor.json")
     # Generate HTML
     timestamp = datetime.now(timezone.utc)
     commit_info = _read_commit_info()
-    html_content = generate_html(component_title, releases_data, all_bug_candidates, pr_data, pr_status, timestamp, pr_error, bugs_tab_data, images_tab_data, index_data, COMPONENT_JIRA_CREATE.get(component), status_data=status_data, diagnostics_text=diagnostics_text, bug_decisions=bug_decisions, commit_version=commit_info["sha"], commit_subject=commit_info["subject"], commit_date=commit_info["date"])
+    html_content = generate_html(component_title, releases_data, all_bug_candidates, pr_data, pr_status, timestamp, pr_error, bugs_tab_data, images_tab_data, index_data, COMPONENT_JIRA_CREATE.get(component), status_data=status_data, diagnostics_text=diagnostics_text, bug_decisions=bug_decisions, commit_version=commit_info["sha"], commit_subject=commit_info["subject"], commit_date=commit_info["date"], history_data=history_data, component=component, source_metadata=source_metadata, sidecar_path=sidecar_path)
 
     output_path = os.path.join(workdir, f"report-{component}-ci-doctor.html")
     with open(output_path, "w", encoding="utf-8") as f:
@@ -2591,6 +2798,7 @@ def main():
     else:
         print("    No container image data")
     print(f"\nHTML report generated: {output_path}")
+    print(f"JSON report generated: {sidecar_path}")
 
 
 if __name__ == "__main__":

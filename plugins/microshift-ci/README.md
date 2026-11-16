@@ -12,8 +12,9 @@ Analyze MicroShift CI failures, produce HTML reports, and draft JIRA bug suggest
 ## CI Doctor Pipeline
 
 The full CI doctor pipeline is driven by `run-doctor.py` — a deterministic Python
-script that orchestrates all stages (prepare, graphs, analyze, bugs, finalize).
-LLM agents are used only for per-job root cause analysis.
+script that orchestrates all stages (prepare, graphs, analyze, bugs, history,
+finalize). LLM agents perform per-job root cause analysis and bounded historical
+causal comparison; acquisition, counting, timelines, and rendering are deterministic.
 
 ```bash
 python3 plugins/microshift-ci/scripts/run-doctor.py \
@@ -28,6 +29,69 @@ python3 plugins/microshift-ci/scripts/run-doctor.py \
 python3 plugins/microshift-ci/scripts/run-doctor.py \
     --releases 4.22 --workdir /tmp/workdir --stages analyze,finalize
 ```
+
+### Two-week failure history
+
+The `history` stage fetches previous Doctor reports from public GCS without a
+browser. New reports publish `report-microshift-ci-doctor.json` alongside HTML;
+older reports are read from their embedded JSON without executing JavaScript.
+Each issue shows a compact list of possible matches: semantic score, age,
+distinct execution count, affected releases, and a source report link. Historical
+search spans all releases in the component, even when only one current release
+is being investigated. Scores are not calibrated probabilities.
+
+The summary distinguishes intermittent evidence from persistent failures in
+observed runs. Full per-job timelines, onset evidence, comparison explanations,
+and coverage diagnostics remain in `history/results.json`, not the HTML.
+Repeated sightings of one execution do not count as recurrences; uncertain
+matches do not increase the accepted count. “First observed” is not an
+introduction date, and intermittency does not establish a harmless flake.
+
+Controls on `run-doctor.py`:
+
+- `--history-days 14`: lookback, independent of predecessor RCA reuse.
+- `--history-as-of <ISO_UTC>`: replay cutoff; otherwise use the Doctor start time.
+- `--history-max-budget-usd 2.0`: comparison spending guard for the workdir,
+  including retries/resume. The CLI enforces the remaining budget; costs are
+  measured after requests, so a final request can cross the limit. Unknown call
+  costs stop further model calls.
+- `--no-history`: disable history and suppress previously saved results.
+
+Comparisons use compact causal-chain cards and at most ten candidates per issue.
+Candidate selection balances releases and release-neutral job families; initial
+comparison opportunities are shared across current issues before optional
+semantic shortlisting. Prompts/outputs are bounded and decisions are cached. Candidate,
+evidence, report, and budget gaps produce a concise partial-history notice in
+HTML; detailed diagnostics remain in JSON. Cache and usage files live directly
+under `history/` so the CI artifact uploader preserves them.
+`history/results.json` is the saved assessment; `report-source.json` preserves
+source and collection provenance.
+HTML refresh uses saved history without network or model calls for history.
+
+For a model-free acquisition check:
+
+```bash
+python3 plugins/microshift-ci/scripts/doctor_history.py \
+    --component microshift --workdir /tmp/workdir --releases 4.22 \
+    --days 14 --fetch-only
+```
+
+Live semantic comparison is CI-only. Test it in the Doctor CI job using an image
+containing the branch's changes; the deployed step uses the published
+`ci/edge-tooling-ai-helpers:latest` image, so rehearsing unchanged configuration
+does not automatically test a local branch. CI configuration lives in
+`openshift/release`; use an affected-job rehearsal there with the candidate image
+and inspect `history/results.json`, `history/cost.json`, and the HTML artifact.
+See [Prow rehearsal instructions](https://docs.ci.openshift.org/how-tos/contributing-openshift-release/#rehearsals).
+No local Claude invocation is needed to run the deterministic tests:
+
+```bash
+python3 -m unittest discover -s plugins/shared/scripts/tests -p '*history*.py'
+```
+
+For a standalone historical job investigation, pass its actual finish timestamp
+with `--as-of`; saved `history/context.json` keeps subsequent offline replays
+anchored to the same observation window.
 
 ## Skills
 

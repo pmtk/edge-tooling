@@ -150,6 +150,17 @@ main() {
 
     echo "  Downloaded ${kept} files to ${workdir}" >&2
 
+    # Replaying a saved investigation must not consult observations from its future.
+    mkdir -p "${workdir}/history"
+    jq -n --arg as_of "$(date -u -d "@${timestamp}" +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg source_url "${url}" \
+        '{as_of: $as_of, source_url: $source_url}' > "${workdir}/history/context.json"
+    if [[ ! -f "${workdir}/report-source.json" ]]; then
+        jq -n --arg started_at "$(date -u -d "@${timestamp}" +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg source_url "${url}" \
+            '{started_at: $started_at, url: $source_url}' > "${workdir}/report-source.json"
+    fi
+
     # Build JSON summary by scanning downloaded files
     echo "" >&2
     echo "=== Building summary ===" >&2
@@ -197,6 +208,12 @@ main() {
     if [[ -f "${workdir}/report-microshift-ci-doctor.html" ]]; then
         html_report="\"${workdir}/report-microshift-ci-doctor.html\""
     fi
+    local json_report="null"
+    [[ -f "${workdir}/report-microshift-ci-doctor.json" ]] && \
+        json_report="\"${workdir}/report-microshift-ci-doctor.json\""
+    local history_report="null"
+    [[ -f "${workdir}/history/results.json" ]] && \
+        history_report="\"${workdir}/history/results.json\""
 
     # Final JSON
     jq -n \
@@ -205,6 +222,8 @@ main() {
         --argjson releases "${releases_json}" \
         --argjson prs "${prs_json}" \
         --argjson html_report "${html_report}" \
+        --argjson json_report "${json_report}" \
+        --argjson history_report "${history_report}" \
         --argjson files_downloaded "${kept}" \
         '{
             workdir: $workdir,
@@ -212,6 +231,8 @@ main() {
             releases: $releases,
             prs: $prs,
             html_report: $html_report,
+            json_report: $json_report,
+            history_report: $history_report,
             files_downloaded: $files_downloaded
         }'
 }

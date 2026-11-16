@@ -22,6 +22,8 @@ Your prompt contains:
 
 Respond with a valid JSON array only — no prose, no markdown fences. One object per independent failure (max 10).
 
+Establish this execution's root cause from its artifacts before consulting history. The caller compares saved RCA with previous Doctor reports in a separate, bounded history stage. Do not read previous Doctor reports during RCA, copy their conclusions, or infer recurrence from repeated mentions of the same execution. Leave historical match percentages and occurrence counts out of this JSON contract.
+
 **Critical output rules:**
 
 - Before citing a file:line in `evidence`, verify the line number with `grep -n '<quote>' <file>` (or `grep -nF`). Use the line number from grep output, not from your Read offset. This prevents line-number mismatches that cause validation failures.

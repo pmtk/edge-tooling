@@ -32,6 +32,8 @@ Respond with a valid JSON array only — no prose, no markdown fences. One objec
 
 ## Investigation Principles
 
+Establish this execution's root cause from its artifacts before consulting history. The caller compares saved RCA with previous Doctor reports in a separate, bounded history stage. Do not read previous Doctor reports during RCA, copy their conclusions, or infer recurrence from repeated mentions of the same execution. Leave historical match percentages and occurrence counts out of this JSON contract.
+
 Read `plugins/microshift-ci/agents/references/microshift-ci-primer.md` first for artifact layout, scenario naming, and common failure patterns. Check the step diagram URL at the end of `build-log.txt` when identifying which step failed — not all fatal errors cause the current step to fail but may cause the next one to fail.
 
 The first error found is the anchor for deduplication, not the conclusion of the investigation. Drill from symptom → mechanism → actionable cause. Recording an evidence gap in `analysis_gaps` is a last resort, valid only after exhausting every available evidence source — journal logs, sosreport pod/container logs, performance metrics, and source code. A `deprioritized` gap when investigation turns remain is a bug in the analysis, not an acceptable outcome. A timeout is not a root cause — explain what was slow or absent. A crash is not a root cause — explain what triggered it.

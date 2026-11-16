@@ -21,6 +21,7 @@ import textwrap
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib import parse, request
 
@@ -56,8 +57,8 @@ COMPONENT_MAP = {
 }
 
 ALL_STAGES_BY_COMPONENT = {
-    "microshift": ["prepare", "graphs", "analyze", "bugs", "finalize"],
-    "lvm-operator": ["prepare", "analyze", "bugs", "finalize"],
+    "microshift": ["prepare", "graphs", "analyze", "bugs", "history", "finalize"],
+    "lvm-operator": ["prepare", "analyze", "bugs", "history", "finalize"],
 }
 
 STAGE_LIMITS = {
@@ -339,8 +340,8 @@ def parse_args():
             to override. Stages default to all stages for the component.
 
             Available stages:
-              microshift:    prepare, graphs, analyze, bugs, finalize
-              lvm-operator:  prepare, analyze, bugs, finalize
+              microshift:    prepare, graphs, analyze, bugs, history, finalize
+              lvm-operator:  prepare, analyze, bugs, history, finalize
 
             Examples:
               python3 plugins/microshift-ci/scripts/run-doctor.py \\
@@ -366,6 +367,14 @@ def parse_args():
                         help="Include pull request analysis")
     parser.add_argument("--repo",
                         help="GitHub org/repo for source checkout (e.g. openshift/microshift)")
+    parser.add_argument("--history-days", type=int, default=14,
+                        help="Historical failure lookback in days (default: 14)")
+    parser.add_argument("--no-history", action="store_true",
+                        help="Disable historical comparison, independently of RCA reuse")
+    parser.add_argument("--history-as-of",
+                        help="UTC history cutoff for replaying a previous investigation")
+    parser.add_argument("--history-max-budget-usd", type=float, default=2.0,
+                        help="CLI-enforced history model budget (default: 2 USD; final request may overshoot)")
     predecessor_group = parser.add_mutually_exclusive_group()
     predecessor_group.add_argument("--predecessor-workdir",
                                    help="GCS base or component artifact path for predecessor RCA reuse")
@@ -406,6 +415,17 @@ class DoctorPipeline:
             self.stages = requested
         else:
             self.stages = list(all_stages)
+        if args.no_history:
+            self.stages = [stage for stage in self.stages if stage != "history"]
+            # Do not display a previous run's history after explicitly disabling it.
+            history_dir = self.workdir / "history"
+            history_dir.mkdir(parents=True, exist_ok=True)
+            (history_dir / "results.json").write_text(json.dumps({
+                "schema_version": 1, "component": self.component,
+                "days": args.history_days, "issues": {}, "cost_usd": 0,
+                "coverage": {"complete": False, "reports_found": 0,
+                             "reports_loaded": 0, "gaps": ["History disabled by --no-history"]},
+            }))
 
         self.releases = [r.strip() for r in args.releases.split(",")]
         self.model = args.model
@@ -704,6 +724,18 @@ class DoctorPipeline:
 
     def prepare(self):
         log.info("=== Stage: prepare ===")
+        from doctor_history import current_execution
+
+        execution = current_execution()
+        source = {
+            "job_name": os.environ.get("JOB_NAME"),
+            "build_id": os.environ.get("BUILD_ID"),
+            "collection_started_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        if execution:
+            source["url"] = execution["url"]
+        source_path = self.workdir / "report-source.json"
+        source_path.write_text(json.dumps(source, indent=2))
         extra = [",".join(self.releases)]
         if self.args.pull_requests:
             extra.append("--pull-requests")
@@ -713,6 +745,8 @@ class DoctorPipeline:
         ok, stdout = self.run_doctor_sh("prepare", extra, "prepare.log")
         if not ok:
             return False
+        source["collected_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        source_path.write_text(json.dumps(source, indent=2))
 
         summary_path = self.workdir / "prepare-summary.json"
 
@@ -973,6 +1007,62 @@ class DoctorPipeline:
             self.message(f"ERROR: Bug search raised exception: {e}")
             return False
 
+    def history(self):
+        """Compare fresh RCA summaries with earlier reports; never rerun old RCA."""
+        log.info("=== Stage: history ===")
+        cmd = [
+            sys.executable, str(Path(self.plugin_dir) / "scripts" / "doctor_history.py"),
+            "--component", self.component, "--workdir", str(self.workdir),
+            "--releases", ",".join(self.releases), "--days", str(self.args.history_days),
+            "--model", self.model, "--max-budget-usd", str(self.args.history_max_budget_usd),
+        ]
+        if self.args.history_as_of:
+            cmd.extend(["--as-of", self.args.history_as_of])
+        history_dir = self.workdir / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        result_path = history_dir / "results.json"
+        # A failed refresh must not leave a previous result masquerading as current.
+        result_path.write_text(json.dumps({
+            "schema_version": 1, "component": self.component,
+            "days": self.args.history_days, "issues": {}, "cost_usd": 0,
+            "coverage": {"complete": False, "reports_found": 0, "reports_loaded": 0,
+                         "gaps": ["History stage did not finish; see logs/history.log"]},
+        }))
+        try:
+            with open(self.logs_dir / "history.log", "w") as log_f:
+                proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT,
+                                        start_new_session=True)
+                _register_child(proc)
+                try:
+                    proc.wait(timeout=1800)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                    proc.wait()
+                    self.message("WARNING: History comparison timed out; see logs/history.log")
+                    return False
+                finally:
+                    _unregister_child(proc)
+            if proc.returncode:
+                self.message("WARNING: History incomplete; see logs/history.log")
+                return False
+            return True
+        except OSError as exc:
+            self.message(f"WARNING: Could not run history comparison: {exc}")
+            return False
+        finally:
+            # Keep spent/unknown costs if the helper was interrupted before
+            # publishing a completed assessment.
+            ledger_path = history_dir / "cost.json"
+            if ledger_path.is_file():
+                try:
+                    ledger = json.loads(ledger_path.read_text())
+                    result = json.loads(result_path.read_text())
+                    result["cost_usd"] = ledger.get("cost_usd", 0)
+                    result["cost_accounting_complete"] = not ledger.get("unaccounted_call", False)
+                    result_path.write_text(json.dumps(result, indent=2))
+                except (OSError, ValueError, TypeError, AttributeError) as exc:
+                    self.message(f"WARNING: Could not preserve history cost accounting: {exc}")
+
     def finalize(self):
         log.info("=== Stage: finalize ===")
         extra = [",".join(self.releases)]
@@ -1041,6 +1131,22 @@ class DoctorPipeline:
                 costs["total_cost_usd"] += cost_info["cost_usd"]
                 costs["total_duration_ms"] += cost_info["duration_ms"]
 
+        history_path = self.workdir / "history" / "results.json"
+        if history_path.is_file():
+            try:
+                history_cost = float(json.loads(history_path.read_text()).get("cost_usd", 0))
+                if history_cost > 0:
+                    costs["stages"]["history"] = {
+                        "releases": {"all": {"jobs": [{"name": "history-comparisons",
+                                                       "cost_usd": history_cost,
+                                                       "duration_ms": 0}],
+                                             "cost_usd": history_cost, "duration_ms": 0}},
+                        "total_cost_usd": history_cost, "total_duration_ms": 0,
+                    }
+                    costs["total_cost_usd"] += history_cost
+            except (OSError, ValueError, TypeError) as exc:
+                self.message(f"WARNING: Could not read history costs: {exc}")
+
         cost_path = self.workdir / "cost-summary.json"
         with open(cost_path, "w") as f:
             json.dump(costs, f, indent=2)
@@ -1083,6 +1189,7 @@ class DoctorPipeline:
             "graphs": self.graphs,
             "analyze": self.analyze,
             "bugs": self.bugs,
+            "history": self.history,
             "finalize": self.finalize,
         }
 
